@@ -5,12 +5,31 @@ import { useTheme } from "next-themes";
 
 export function ThemeToggle() {
   const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = React.useState(false);
+  
+  // After hydration, we can show the correct theme icon
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
+  
+  // Avoid hydration mismatch by not rendering any theme-specific content until client-side
+  if (!mounted) {
+    // Return an empty button without any SVGs during server-side rendering
+    return (
+      <button
+        className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800"
+        title="Toggle theme"
+        aria-label="Toggle theme"
+      />
+    );
+  }
 
   return (
     <button
       onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
       className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800"
       title="Toggle theme"
+      aria-label="Toggle theme"
     >
       {theme === "light" ? (
         <svg

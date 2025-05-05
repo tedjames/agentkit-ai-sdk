@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { ChatHeader } from './ChatHeader';
 import { ChatMessage } from './ChatMessage';
@@ -16,11 +16,6 @@ export function Chat() {
   } = useChat({
     api: '/api/chat'
   });
-
-  // Log for debugging
-  console.log("Chat component status:", status);
-  console.log("Chat component messages:", messages);
-  console.log("Chat component input:", input);
 
   const handleNewChat = () => {
     window.location.reload();
@@ -54,7 +49,7 @@ export function Chat() {
       />
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        {messages.length === 0 ? (
+        {formattedMessages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
               <h2 className="text-2xl font-semibold mb-2 dark:text-white">Welcome to AgentKit</h2>
