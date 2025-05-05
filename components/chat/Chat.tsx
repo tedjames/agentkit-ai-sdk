@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { ChatHeader } from './ChatHeader';
 import { ChatMessage } from './ChatMessage';
@@ -10,12 +10,54 @@ export function Chat() {
     messages, 
     input, 
     handleInputChange, 
-    handleSubmit,
+    handleSubmit: originalHandleSubmit,
     status,
     error 
   } = useChat({
     api: '/api/chat'
   });
+
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+  
+  // Scroll to bottom function
+  const scrollToBottom = () => {
+    if (chatContainerRef.current && autoScroll) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  };
+
+  // Custom submit handler that enables auto-scrolling
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    setAutoScroll(true); // Re-enable auto-scrolling when submitting a message
+    originalHandleSubmit(e);
+  };
+
+  // Handle user scroll
+  useEffect(() => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+    
+    const handleScroll = () => {
+      // If user scrolls up (not at bottom), disable auto-scroll
+      const isScrolledToBottom = 
+        container.scrollHeight - container.clientHeight <= container.scrollTop + 10; // 10px threshold
+      
+      if (!isScrolledToBottom) {
+        setAutoScroll(false);
+      } else {
+        setAutoScroll(true);
+      }
+    };
+    
+    container.addEventListener('scroll', handleScroll);
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Scroll to bottom when new messages come in or during streaming
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, status]);
 
   const handleNewChat = () => {
     window.location.reload();
@@ -48,7 +90,10 @@ export function Chat() {
         onViewProfile={handleViewProfile}
       />
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+      <div 
+        ref={chatContainerRef}
+        className="flex-1 overflow-y-auto p-4 space-y-6"
+      >
         {formattedMessages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
