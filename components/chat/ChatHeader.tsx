@@ -17,12 +17,12 @@ export function ChatHeader({
   onViewProfile
 }: ChatHeaderProps) {
   return (
-    <header className="border-b border-gray-200 dark:border-gray-700 py-3 px-4 flex justify-between items-center bg-white dark:bg-gray-900">
-      <div className="text-xl font-semibold dark:text-white">AgentKit</div>
+    <header className="border-b border-gray-200 dark:border-zinc-700 py-3 px-4 flex justify-between items-center bg-white dark:bg-zinc-900">
+      <div className="text-lg font-light dark:text-white">AgentKit</div>
       <div className="flex items-center gap-3">
         <ThemeToggle />
         <button 
-          className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 dark:text-gray-300"
+          className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-zinc-800 dark:text-zinc-300"
           onClick={onNewChat}
           title="New chat"
         >
@@ -32,7 +32,7 @@ export function ChatHeader({
           </svg>
         </button>
         <button 
-          className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 dark:text-gray-300"
+          className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-zinc-800 dark:text-zinc-300"
           onClick={onShareChat}
           title="Share chat"
         >
@@ -43,7 +43,7 @@ export function ChatHeader({
           </svg>
         </button>
         <button 
-          className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 dark:text-gray-300"
+          className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-zinc-800 dark:text-zinc-300"
           onClick={onViewConversations}
           title="View conversations"
         >
@@ -57,7 +57,7 @@ export function ChatHeader({
           </svg>
         </button>
         <button 
-          className="p-2 rounded-full bg-gray-200 dark:bg-gray-700 h-9 w-9 flex items-center justify-center dark:text-gray-300"
+          className="p-2 rounded-full bg-gray-200 dark:bg-zinc-700 h-9 w-9 flex items-center justify-center dark:text-zinc-300"
           onClick={onViewProfile}
           title="Profile"
         >

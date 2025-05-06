@@ -17,7 +17,7 @@ export function ThemeToggle() {
     // Return an empty button without any SVGs during server-side rendering
     return (
       <button
-        className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800"
+        className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-zinc-800"
         title="Toggle theme"
         aria-label="Toggle theme"
       />
@@ -27,7 +27,7 @@ export function ThemeToggle() {
   return (
     <button
       onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-      className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800"
+      className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-zinc-800"
       title="Toggle theme"
       aria-label="Toggle theme"
     >
