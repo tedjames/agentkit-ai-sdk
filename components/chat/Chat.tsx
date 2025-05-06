@@ -7,15 +7,18 @@ import { ChatMessage } from './ChatMessage';
 import { Brain, Paperclip, ChevronDown } from 'lucide-react';
 
 export function Chat() {
+  const [chatId, setChatId] = useState(Date.now().toString());
+  
   const { 
     messages, 
     input, 
     handleInputChange, 
     handleSubmit: originalHandleSubmit,
     status,
-    error 
+    error
   } = useChat({
-    api: '/api/chat'
+    api: '/api/chat',
+    id: chatId
   });
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -369,7 +372,7 @@ export function Chat() {
   }, [messages, status]);
 
   const handleNewChat = () => {
-    window.location.reload();
+    setChatId(Date.now().toString());
   };
 
   const handleShareChat = () => {
@@ -420,7 +423,7 @@ export function Chat() {
           ))
         )}
         
-        {(status === 'submitted' || status === 'streaming') && (
+        {(status === 'submitted') && (
           <div className="flex justify-start">
             <div className="max-w-3xl dark:text-white">
               <div className="flex space-x-2 items-center">
