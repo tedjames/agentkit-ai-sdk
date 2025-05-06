@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { ChatHeader } from './ChatHeader';
 import { ChatMessage } from './ChatMessage';
-import { Brain, Paperclip } from 'lucide-react';
+import { Brain, Paperclip, ChevronDown } from 'lucide-react';
 
 export function Chat() {
   const { 
@@ -21,6 +21,7 @@ export function Chat() {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [isProgrammaticScrolling, setIsProgrammaticScrolling] = useState(false);
   const [deepSearchEnabled, setDeepSearchEnabled] = useState(false);
   const [selectedWorkflow, setSelectedWorkflow] = useState("Customer Support");
   const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
@@ -41,6 +42,25 @@ export function Chat() {
         filter: drop-shadow(0 0 2px rgba(219, 39, 119, 0.3));
         opacity: 0.7;
       }
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    @keyframes fadeOut {
+      from { opacity: 1; transform: translateY(0); }
+      to { opacity: 0; transform: translateY(10px); }
+    }
+    
+    .scroll-button-show {
+      animation: fadeIn 0.3s forwards;
+    }
+    
+    .scroll-button-hide {
+      animation: fadeOut 0.3s forwards;
+      pointer-events: none;
     }
   `;
   
@@ -137,9 +157,17 @@ export function Chat() {
   };
 
   // Scroll to bottom function
-  const scrollToBottom = () => {
-    if (chatContainerRef.current && autoScroll) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+  const scrollToBottom = (force = false, smooth = false) => {
+    if (chatContainerRef.current && (autoScroll || force)) {
+      if (smooth) {
+        setIsProgrammaticScrolling(true);
+        chatContainerRef.current.scrollTo({
+          top: chatContainerRef.current.scrollHeight,
+          behavior: 'smooth'
+        });
+      } else {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
     }
   };
 
@@ -317,20 +345,23 @@ export function Chat() {
     if (!container) return;
     
     const handleScroll = () => {
-      // If user scrolls up (not at bottom), disable auto-scroll
+      // Check if scrolled to bottom
       const isScrolledToBottom = 
         container.scrollHeight - container.clientHeight <= container.scrollTop + 10; // 10px threshold
       
-      if (!isScrolledToBottom) {
-        setAutoScroll(false);
-      } else {
+      if (isScrolledToBottom) {
         setAutoScroll(true);
+        if (isProgrammaticScrolling) {
+          setIsProgrammaticScrolling(false);
+        }
+      } else if (!isProgrammaticScrolling) {
+        setAutoScroll(false);
       }
     };
     
     container.addEventListener('scroll', handleScroll);
     return () => container.removeEventListener('scroll', handleScroll);
-  }, []);
+  }, [isProgrammaticScrolling]);
 
   // Scroll to bottom when new messages come in or during streaming
   useEffect(() => {
@@ -408,6 +439,18 @@ export function Chat() {
               <p className="text-sm mt-1">{error.message}</p>
             </div>
           </div>
+        )}
+        
+        {/* Floating scroll to bottom button */}
+        {!autoScroll && !isProgrammaticScrolling && (
+          <button 
+            onClick={() => {
+              scrollToBottom(true, true);
+            }}
+            className={`fixed bottom-36 right-8 w-10 h-10 rounded-full bg-gray-200 dark:bg-zinc-700 flex items-center justify-center shadow-md hover:bg-gray-300 dark:hover:bg-zinc-600 focus:outline-none z-10 scroll-button-show`}
+          >
+            <ChevronDown size={20} className="text-gray-800 dark:text-zinc-200" />
+          </button>
         )}
       </div>
 
