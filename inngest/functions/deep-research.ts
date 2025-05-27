@@ -5,15 +5,7 @@ import { z } from "zod";
 // Import agents
 import { stagingAgent } from "./deep-research/staging-agent";
 import { reasoningAgent } from "./deep-research/reasoning-agent";
-import { analysisAgent } from "./deep-research/analysis-agent";
 import { reportingAgent } from "./deep-research/reporting-agent";
-
-// Import token tracking utilities
-import {
-  getStageTokenUsage,
-  getTotalTokenUsage,
-  initializeTokenTracking,
-} from "./deep-research/token-tracker";
 
 // Reasoning tree related interfaces
 export interface ReasoningStage {
@@ -88,74 +80,6 @@ export interface NetworkState {
 
   // Session tracking
   "session-uuid"?: string;
-
-  // Token tracking
-  tokenUsage?: {
-    // Audit trail of all inference calls
-    auditTrail: TokenUsageEntry[];
-
-    // Aggregated usage by stage
-    byStage: Map<number, StageTokenUsage>;
-
-    // Total usage across all stages
-    total: TotalTokenUsage;
-  };
-}
-
-// Token tracking interfaces
-export interface TokenUsageEntry {
-  id: string;
-  timestamp: string;
-  agent: string;
-  operation: string; // e.g., "analyze-search-result", "generate-followup-queries"
-  model: string;
-  usage: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-    reasoningTokens?: number; // For o1/o3 models
-  };
-  cost: {
-    promptCost: number;
-    completionCost: number;
-    reasoningCost?: number;
-    totalCost: number;
-  };
-  metadata?: Record<string, any>;
-}
-
-export interface StageTokenUsage {
-  stageId: number;
-  stageName: string;
-  usage: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-    reasoningTokens?: number;
-  };
-  cost: {
-    promptCost: number;
-    completionCost: number;
-    reasoningCost?: number;
-    totalCost: number;
-  };
-  inferenceCount: number;
-}
-
-export interface TotalTokenUsage {
-  usage: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-    reasoningTokens?: number;
-  };
-  cost: {
-    promptCost: number;
-    completionCost: number;
-    reasoningCost?: number;
-    totalCost: number;
-  };
-  inferenceCount: number;
 }
 
 // Update the event interface to match our data structure
@@ -224,40 +148,6 @@ interface ProgressEvent {
   completed?: boolean;
   findings?: ProgressEventFinding[] | null;
   stages?: ProgressEventStage[] | null;
-  tokenUsage?: {
-    // Token usage for the current stage
-    currentStage?: {
-      usage: {
-        promptTokens: number;
-        completionTokens: number;
-        totalTokens: number;
-        reasoningTokens?: number;
-      };
-      cost: {
-        promptCost: number;
-        completionCost: number;
-        reasoningCost?: number;
-        totalCost: number;
-      };
-      inferenceCount: number;
-    };
-    // Total token usage across all stages
-    total?: {
-      usage: {
-        promptTokens: number;
-        completionTokens: number;
-        totalTokens: number;
-        reasoningTokens?: number;
-      };
-      cost: {
-        promptCost: number;
-        completionCost: number;
-        reasoningCost?: number;
-        totalCost: number;
-      };
-      inferenceCount: number;
-    };
-  } | null;
 }
 
 /**
@@ -276,7 +166,6 @@ function publishProgressEvent({
   completed = false,
   findings = null,
   stages = null,
-  state = null,
 }: {
   publish: any;
   uuid: string;
@@ -304,35 +193,7 @@ function publishProgressEvent({
   completed?: boolean;
   findings?: Finding[] | null;
   stages?: ReasoningStage[] | null;
-  state?: NetworkState | null;
 }) {
-  // Get token usage data if state is provided
-  let tokenUsage = null;
-  if (state && state.tokenUsage) {
-    const currentStageIndex = state.currentStageIndex || 0;
-    const stageUsage = getStageTokenUsage(state, currentStageIndex);
-    const totalUsage = getTotalTokenUsage(state);
-
-    if (stageUsage || totalUsage) {
-      tokenUsage = {
-        currentStage: stageUsage
-          ? {
-              usage: stageUsage.usage,
-              cost: stageUsage.cost,
-              inferenceCount: stageUsage.inferenceCount,
-            }
-          : undefined,
-        total: totalUsage
-          ? {
-              usage: totalUsage.usage,
-              cost: totalUsage.cost,
-              inferenceCount: totalUsage.inferenceCount,
-            }
-          : undefined,
-      };
-    }
-  }
-
   return publish({
     channel: `deep-research.${uuid}`,
     topic: "updates",
@@ -407,7 +268,6 @@ function publishProgressEvent({
           })),
         },
       })),
-      tokenUsage,
     } as ProgressEvent,
   });
 }
@@ -439,7 +299,7 @@ export const deepResearchAgent = inngest.createFunction(
     // Create the network with our agents
     const researchNetwork = createNetwork({
       name: "Deep Research Network",
-      agents: [stagingAgent, reasoningAgent, analysisAgent, reportingAgent],
+      agents: [stagingAgent, reasoningAgent, reportingAgent],
       maxIter: 25,
       defaultModel: openai({ model: "gpt-4o" }),
       defaultState: createState<NetworkState>({
@@ -486,7 +346,6 @@ export const deepResearchAgent = inngest.createFunction(
               percent: 100,
               currentStep: "Complete",
             },
-            state,
           });
           return undefined;
         }
@@ -503,7 +362,6 @@ export const deepResearchAgent = inngest.createFunction(
               percent: 10,
               currentStep: "Planning research stages",
             },
-            state,
           });
           return stagingAgent;
         }
@@ -525,8 +383,17 @@ export const deepResearchAgent = inngest.createFunction(
               currentStep: "Research stages defined",
               totalSteps: (state.reasoningStages?.length || 0) * 2, // Each stage has reasoning and analysis
             },
-            state,
           });
+
+          // After publishing stages, immediately start with the first stage
+          // Don't fall through to the next logic - route to reasoning agent
+          const firstStage = state.reasoningStages[0];
+          if (firstStage && !firstStage.reasoningComplete) {
+            console.log(
+              "ROUTER: Staging complete. Starting first stage with ReasoningAgent."
+            );
+            return reasoningAgent;
+          }
         }
 
         // Get current stage
@@ -752,43 +619,6 @@ export const deepResearchAgent = inngest.createFunction(
         percent: 100,
         currentStep: "Complete",
       },
-      // stages: response.state.data.reasoningStages?.map((stage) => ({
-      //   id: stage.id,
-      //   name: stage.name,
-      //   description: stage.description,
-      //   analysis: stage.analysis,
-      //   reasoningComplete: stage.reasoningComplete,
-      //   analysisComplete: stage.analysisComplete,
-      //   reasoningTree: stage.reasoningTree && {
-      //     nodes: stage.reasoningTree.nodes.map((node) => ({
-      //       id: node.id,
-      //       parentId: node.parentId,
-      //       depth: node.depth,
-      //       query: node.query,
-      //       reasoning: node.reasoning,
-      //       findings: node.findings.map((finding) => ({
-      //         source: finding.source,
-      //         content:
-      //           finding.content.substring(0, 200) +
-      //           (finding.content.length > 200 ? "..." : ""),
-      //         relevanceScore: finding.relevanceScore,
-      //         analysis:
-      //           finding.analysis ||
-      //           response.state.data.analysisCache?.get(finding.source) ||
-      //           "Analysis pending...",
-      //       })),
-      //       reflection: node.reflection,
-      //       relevanceScore: node.relevanceScore,
-      //       children: node.children,
-      //     })),
-      //   },
-      // })),
-      // findings: allFindings.map((finding) => ({
-      //   ...finding,
-      //   content:
-      //     finding.content.substring(0, 200) +
-      //     (finding.content.length > 200 ? "..." : ""),
-      // })),
     });
 
     return {
