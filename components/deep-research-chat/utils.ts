@@ -1,5 +1,12 @@
 import { ResearchStage, ResearchUpdate } from "./types";
 
+interface ResearchConfiguration {
+  maxDepth: number;
+  maxBreadth: number;
+  stageCount: number;
+  queriesPerStage: number;
+}
+
 interface ProgressInfo {
   percent: number;
   currentStep: string;
@@ -7,7 +14,8 @@ interface ProgressInfo {
 
 export function calculateProgress(
   stages: ResearchStage[],
-  latestUpdate: ResearchUpdate | undefined
+  latestUpdate: ResearchUpdate | undefined,
+  configuration?: ResearchConfiguration
 ): ProgressInfo {
   // If no stages yet, we're in initialization/planning
   if (!stages.length) {
@@ -52,19 +60,37 @@ export function calculateProgress(
   // Calculate progress within current stage
   let stageProgress = 0;
   if (currentStage.reasoningTree?.nodes) {
+    // Calculate expected total nodes for this stage based on configuration
+    const expectedNodesPerStage = configuration
+      ? configuration.queriesPerStage + // Initial queries
+        (configuration.maxDepth > 1 ? configuration.maxBreadth : 0) // Follow-up queries if depth > 1
+      : currentStage.reasoningTree.nodes.length;
+
     const totalQueries = currentStage.reasoningTree.nodes.length;
-    if (totalQueries > 0) {
+    const maxQueries = Math.max(totalQueries, expectedNodesPerStage);
+
+    if (maxQueries > 0) {
       const queriesWithFindings = currentStage.reasoningTree.nodes.filter(
         (n) => n.findings.length > 0
       ).length;
 
-      // Queries are 80% of stage weight, analysis is 20%
-      const queryWeight = (stageWeight * 0.8) / totalQueries;
-      stageProgress = queriesWithFindings * queryWeight;
+      // Calculate node creation progress (20% of stage weight)
+      const nodeCreationWeight = stageWeight * 0.2;
+      const nodeCreationProgress =
+        (totalQueries / expectedNodesPerStage) * nodeCreationWeight;
 
-      if (currentStage.analysisComplete) {
-        stageProgress += stageWeight * 0.2;
-      }
+      // Calculate findings progress (60% of stage weight)
+      const findingsWeight = stageWeight * 0.6;
+      const findingsProgress =
+        (queriesWithFindings / maxQueries) * findingsWeight;
+
+      // Analysis is 20% of stage weight
+      const analysisProgress = currentStage.analysisComplete
+        ? stageWeight * 0.2
+        : 0;
+
+      stageProgress =
+        nodeCreationProgress + findingsProgress + analysisProgress;
     }
   }
 
@@ -82,7 +108,7 @@ export function calculateProgress(
     );
 
     if (pendingQueries.length > 0) {
-      currentStep += `Searching for information...`;
+      currentStep += `Searching for information (${pendingQueries.length} queries remaining)...`;
     } else if (!currentStage.analysisComplete) {
       currentStep += "Analyzing findings...";
     } else {

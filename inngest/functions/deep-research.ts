@@ -1,11 +1,19 @@
 import { createState, createNetwork, openai } from "@inngest/agent-kit";
 import { inngest } from "../client";
+import { z } from "zod";
 
 // Import agents
 import { stagingAgent } from "./deep-research/staging-agent";
 import { reasoningAgent } from "./deep-research/reasoning-agent";
 import { analysisAgent } from "./deep-research/analysis-agent";
 import { reportingAgent } from "./deep-research/reporting-agent";
+
+// Import token tracking utilities
+import {
+  getStageTokenUsage,
+  getTotalTokenUsage,
+  initializeTokenTracking,
+} from "./deep-research/token-tracker";
 
 // Reasoning tree related interfaces
 export interface ReasoningStage {
@@ -39,6 +47,11 @@ export interface Finding {
   content: string;
   relevanceScore?: number;
   analysis?: string; // Analysis of this specific finding
+  title?: string | null;
+  author?: string | null;
+  publishedDate?: string | null;
+  favicon?: string | null;
+  image?: string | null;
 }
 
 // Define the NetworkState
@@ -48,26 +61,101 @@ export interface NetworkState {
   context?: string | null;
 
   // Research configuration
-  maxDepth?: number; // How deep reasoning trees go
-  maxBreadth?: number; // How wide reasoning trees branch
+  configuration?: {
+    maxDepth: number; // Maximum depth of the reasoning tree
+    maxBreadth: number; // Maximum breadth (nodes per level)
+    stageCount: number; // Number of research stages
+    queriesPerStage: number; // Initial queries per stage
+  };
 
   // Research stages and progress tracking
   reasoningStages?: ReasoningStage[];
   stagingComplete?: boolean;
   currentStageIndex?: number;
   finalAnalysis?: string;
-  finalReport?: string; // Final markdown report
+  draftReport?: string; // Initial draft before editing
+  finalReport?: string; // Final polished version
 
   // Flow control
   networkComplete?: boolean; // Set when the network is complete
-  newStage?: boolean; // Indicates moving to a new stage
 
   // Deduplication tracking
   searchedUrls?: Set<string>; // URLs that have already been searched
   analysisCache?: Map<string, string>; // Cache of URL to analysis mapping for reuse
 
+  // Citation numbering map (url -> number) generated during reporting
+  citations?: Map<string, number>;
+
   // Session tracking
   "session-uuid"?: string;
+
+  // Token tracking
+  tokenUsage?: {
+    // Audit trail of all inference calls
+    auditTrail: TokenUsageEntry[];
+
+    // Aggregated usage by stage
+    byStage: Map<number, StageTokenUsage>;
+
+    // Total usage across all stages
+    total: TotalTokenUsage;
+  };
+}
+
+// Token tracking interfaces
+export interface TokenUsageEntry {
+  id: string;
+  timestamp: string;
+  agent: string;
+  operation: string; // e.g., "analyze-search-result", "generate-followup-queries"
+  model: string;
+  usage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    reasoningTokens?: number; // For o1/o3 models
+  };
+  cost: {
+    promptCost: number;
+    completionCost: number;
+    reasoningCost?: number;
+    totalCost: number;
+  };
+  metadata?: Record<string, any>;
+}
+
+export interface StageTokenUsage {
+  stageId: number;
+  stageName: string;
+  usage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    reasoningTokens?: number;
+  };
+  cost: {
+    promptCost: number;
+    completionCost: number;
+    reasoningCost?: number;
+    totalCost: number;
+  };
+  inferenceCount: number;
+}
+
+export interface TotalTokenUsage {
+  usage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    reasoningTokens?: number;
+  };
+  cost: {
+    promptCost: number;
+    completionCost: number;
+    reasoningCost?: number;
+    totalCost: number;
+  };
+  inferenceCount: number;
 }
 
 // Update the event interface to match our data structure
@@ -76,6 +164,11 @@ interface ProgressEventFinding {
   content: string;
   relevanceScore?: number;
   analysis?: string;
+  title?: string | null;
+  author?: string | null;
+  publishedDate?: string | null;
+  favicon?: string | null;
+  image?: string | null;
 }
 
 interface ProgressEventNode {
@@ -131,6 +224,40 @@ interface ProgressEvent {
   completed?: boolean;
   findings?: ProgressEventFinding[] | null;
   stages?: ProgressEventStage[] | null;
+  tokenUsage?: {
+    // Token usage for the current stage
+    currentStage?: {
+      usage: {
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+        reasoningTokens?: number;
+      };
+      cost: {
+        promptCost: number;
+        completionCost: number;
+        reasoningCost?: number;
+        totalCost: number;
+      };
+      inferenceCount: number;
+    };
+    // Total token usage across all stages
+    total?: {
+      usage: {
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+        reasoningTokens?: number;
+      };
+      cost: {
+        promptCost: number;
+        completionCost: number;
+        reasoningCost?: number;
+        totalCost: number;
+      };
+      inferenceCount: number;
+    };
+  } | null;
 }
 
 /**
@@ -149,6 +276,7 @@ function publishProgressEvent({
   completed = false,
   findings = null,
   stages = null,
+  state = null,
 }: {
   publish: any;
   uuid: string;
@@ -176,7 +304,35 @@ function publishProgressEvent({
   completed?: boolean;
   findings?: Finding[] | null;
   stages?: ReasoningStage[] | null;
+  state?: NetworkState | null;
 }) {
+  // Get token usage data if state is provided
+  let tokenUsage = null;
+  if (state && state.tokenUsage) {
+    const currentStageIndex = state.currentStageIndex || 0;
+    const stageUsage = getStageTokenUsage(state, currentStageIndex);
+    const totalUsage = getTotalTokenUsage(state);
+
+    if (stageUsage || totalUsage) {
+      tokenUsage = {
+        currentStage: stageUsage
+          ? {
+              usage: stageUsage.usage,
+              cost: stageUsage.cost,
+              inferenceCount: stageUsage.inferenceCount,
+            }
+          : undefined,
+        total: totalUsage
+          ? {
+              usage: totalUsage.usage,
+              cost: totalUsage.cost,
+              inferenceCount: totalUsage.inferenceCount,
+            }
+          : undefined,
+      };
+    }
+  }
+
   return publish({
     channel: `deep-research.${uuid}`,
     topic: "updates",
@@ -199,6 +355,11 @@ function publishProgressEvent({
               content: finding.content,
               relevanceScore: finding.relevanceScore,
               analysis: finding.analysis,
+              title: finding.title ?? null,
+              author: finding.author ?? null,
+              publishedDate: finding.publishedDate ?? null,
+              favicon: finding.favicon ?? null,
+              image: finding.image ?? null,
             })),
             reflection: node.reflection,
             relevanceScore: node.relevanceScore,
@@ -216,6 +377,11 @@ function publishProgressEvent({
         content: finding.content,
         relevanceScore: finding.relevanceScore,
         analysis: finding.analysis,
+        title: finding.title ?? null,
+        author: finding.author ?? null,
+        publishedDate: finding.publishedDate ?? null,
+        favicon: finding.favicon ?? null,
+        image: finding.image ?? null,
       })),
       stages: stages?.map((stage) => ({
         id: stage.id,
@@ -241,6 +407,7 @@ function publishProgressEvent({
           })),
         },
       })),
+      tokenUsage,
     } as ProgressEvent,
   });
 }
@@ -253,7 +420,7 @@ export const deepResearchAgent = inngest.createFunction(
     event: "deep-research/run",
   },
   async ({ step, event, publish }) => {
-    const { topic, context, uuid } = event.data;
+    const { topic, context, uuid, configuration: eventConfig } = event.data;
 
     // Send initial starting event
     await publishProgressEvent({
@@ -270,11 +437,22 @@ export const deepResearchAgent = inngest.createFunction(
     });
 
     // Create the network with our agents
-    const researchNetwork = createNetwork<NetworkState>({
+    const researchNetwork = createNetwork({
       name: "Deep Research Network",
       agents: [stagingAgent, reasoningAgent, analysisAgent, reportingAgent],
       maxIter: 25,
       defaultModel: openai({ model: "gpt-4o" }),
+      defaultState: createState<NetworkState>({
+        topic: undefined,
+        context: null,
+        configuration: eventConfig, // Use configuration from event
+        reasoningStages: [],
+        stagingComplete: false,
+        currentStageIndex: 0,
+        searchedUrls: new Set<string>(),
+        analysisCache: new Map<string, string>(),
+        "session-uuid": undefined,
+      }),
       router: async ({ network }) => {
         const state = network.state.data;
 
@@ -308,6 +486,7 @@ export const deepResearchAgent = inngest.createFunction(
               percent: 100,
               currentStep: "Complete",
             },
+            state,
           });
           return undefined;
         }
@@ -324,13 +503,17 @@ export const deepResearchAgent = inngest.createFunction(
               percent: 10,
               currentStep: "Planning research stages",
             },
+            state,
           });
           return stagingAgent;
         }
 
         // If we just completed staging, publish all stages
-        if (state.stagingComplete && state.newStage) {
-          state.newStage = false; // Reset the flag
+        if (
+          state.stagingComplete &&
+          state.reasoningStages &&
+          state.reasoningStages.length > 0
+        ) {
           await publishProgressEvent({
             publish,
             uuid,
@@ -342,6 +525,7 @@ export const deepResearchAgent = inngest.createFunction(
               currentStep: "Research stages defined",
               totalSteps: (state.reasoningStages?.length || 0) * 2, // Each stage has reasoning and analysis
             },
+            state,
           });
         }
 
@@ -503,26 +687,13 @@ export const deepResearchAgent = inngest.createFunction(
         });
         return undefined;
       },
-      defaultState: createState<NetworkState>({
-        topic: undefined,
-        context: null,
-        maxDepth: 2, // Maximum tree depth of 2 levels (0, 1)
-        maxBreadth: 3, // Now using 3 nodes per stage
-        reasoningStages: [],
-        stagingComplete: false,
-        currentStageIndex: 0,
-        searchedUrls: new Set<string>(),
-        analysisCache: new Map<string, string>(),
-        "session-uuid": undefined,
-      }),
     });
 
     // Create a properly typed state for this run
     const state = createState<NetworkState>({
       topic: topic,
       context: context,
-      maxDepth: 2, // Maximum tree depth of 2 levels (0, 1)
-      maxBreadth: 3, // Now using 3 nodes per stage
+      configuration: eventConfig, // Use configuration from event
       reasoningStages: [],
       stagingComplete: false,
       currentStageIndex: 0,

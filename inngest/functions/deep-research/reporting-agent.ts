@@ -2,7 +2,12 @@ import { createAgent, createTool, openai } from "@inngest/agent-kit";
 import { z } from "zod";
 import { generateObject, generateText } from "ai";
 import { openai as vercelOpenAI } from "@ai-sdk/openai";
-import { NetworkState } from "../deep-research";
+import { NetworkState, ReasoningStage } from "../deep-research";
+import {
+  collectUniqueSources,
+  assignCitationNumbers,
+  formatCitationIEEE,
+} from "./citations";
 
 /**
  * Helper functions for better console logging
@@ -139,12 +144,14 @@ async function generateSection({
   outline,
   stageAnalyses,
   topic,
+  referenceLines,
   step,
 }: {
   section: any;
   outline: any;
   stageAnalyses: string[];
   topic: string;
+  referenceLines: string[];
   step?: any;
 }): Promise<string> {
   logInfo(`Generating report section: ${section.title}`);
@@ -161,6 +168,9 @@ async function generateSection({
         REPORT TITLE: ${outline.title}
         SECTION TO WRITE: ${section.title}
         SECTION DESCRIPTION: ${section.description}
+        
+        SOURCES (use [n] inline when citing):
+        ${referenceLines.join("<br/>\n")}
         
         KEY POINTS TO ADDRESS:
         ${section.keyPoints.map((point: string) => `- ${point}`).join("\n")}
@@ -179,7 +189,7 @@ async function generateSection({
         6. Maintains a formal, academic tone appropriate for a research report
         7. Includes relevant examples, data points, or evidence from the research findings
 
-        
+        Use inline IEEE citations [n] where appropriate, based on the source list above. Do NOT invent new numbers. Do NOT include a references section here – the master references will be added later.
         
         The section should be comprehensive, well-structured, and flow naturally. Use markdown 
         formatting for headings, emphasis, lists, etc. Each section should stand as a complete
@@ -196,114 +206,79 @@ async function generateSection({
 }
 
 /**
- * Generate the introduction for the report
+ * Edit and polish a draft report into a final version
  */
-async function generateIntroduction({
-  outline,
+async function editReport({
+  draftReport,
+  stageAnalyses,
   topic,
   step,
 }: {
-  outline: any;
+  draftReport: string;
+  stageAnalyses: string[];
   topic: string;
   step?: any;
 }): Promise<string> {
-  logInfo("Generating report introduction");
+  logInfo("Editing and polishing draft report");
 
-  const introResult = await step?.ai.wrap("generate-introduction", async () => {
-    return await generateObject({
+  const editResult = await step?.ai.wrap("edit-report", async () => {
+    return await generateText({
       model: vercelOpenAI("gpt-4o"),
-      schema: z.object({
-        introduction: z
-          .string()
-          .describe("Complete introduction for the report"),
-      }),
-      prompt: `
-        You are a research expert writing the introduction to a comprehensive report.
-        
-        TOPIC: ${topic}
-        REPORT TITLE: ${outline.title}
-        INTRODUCTION GUIDANCE: ${outline.introduction}
-        
-        REPORT SECTIONS:
-        ${outline.sections
-          .map((section: any) => `- ${section.title}: ${section.description}`)
-          .join("\n")}
-        
-        Write a complete introduction for the report that:
-        1. Begins with a compelling hook that engages the reader
-        2. Establishes the context and importance of the research topic
-        3. Clearly states the purpose and scope of the report
-        4. Briefly outlines the methodology or approach used
-        5. Previews the main sections of the report
-        6. Sets the tone for a formal, academic research document
-        
-        The introduction should be comprehensive yet concise, providing readers with all 
-        necessary background while motivating them to read the full report. Use markdown 
-        formatting as appropriate.
-      `,
+      prompt: `You are an expert research editor and writing coach tasked with transforming a draft research report into a polished, comprehensive final version.
+
+TOPIC: ${topic}
+
+You have access to both the draft report and all the original stage analyses:
+
+STAGE ANALYSES:
+${stageAnalyses
+  .map((analysis, i) => `STAGE ${i + 1} ANALYSIS:\n${analysis}`)
+  .join("\n\n")}
+
+DRAFT REPORT:
+${draftReport}
+
+Your task is to edit, expand, and polish this report into a final version that MAINTAINS ALL EXISTING INLINE CITATION NUMBERS AND THE REFERENCES LIST. Do NOT change citation numbers or add new ones. You may move sentences but keep citations next to the facts they support.
+
+The revised report should:
+1. STRUCTURE & FLOW
+- Reorganize sections if needed for better logical flow
+- Add transitions between sections
+- Create a compelling narrative arc from introduction through conclusion
+- Draw connections between different sections where relevant
+
+2. CONTENT ENHANCEMENT
+- Expand sections that need more depth
+- Add cross-references between related points in different sections
+- Synthesize insights across sections
+- Add new sections or subsections if needed to explore important connections
+- Ensure the report is AT LEAST as long as the source material, preferably longer
+- Draw on the stage analyses to add relevant details that may have been missed
+
+3. INTRODUCTION & CONCLUSION
+- Write a new, engaging introduction that sets up the entire report
+- Create a comprehensive conclusion that synthesizes all key findings
+- Ensure both connect strongly to the main body
+
+4. ACADEMIC QUALITY
+- Maintain formal academic tone
+- Strengthen argumentation and evidence
+- Add nuance and qualification where needed
+- Ensure proper citation of sources and findings
+
+5. FORMATTING
+- Use clear markdown formatting
+- Add section numbers if appropriate
+- Include a table of contents
+- Use consistent heading levels
+
+The final version should be a substantial expansion of the draft that creates a cohesive, authoritative research document. Feel free to reorganize and expand the content significantly while preserving the core insights.
+
+Generate the complete polished report now, starting with a table of contents.`,
     });
   });
 
-  return (
-    introResult?.object?.introduction ||
-    "# Introduction\n\nThe introduction could not be generated."
-  );
-}
-
-/**
- * Generate the conclusion for the report
- */
-async function generateConclusion({
-  outline,
-  topic,
-  step,
-}: {
-  outline: any;
-  topic: string;
-  step?: any;
-}): Promise<string> {
-  logInfo("Generating report conclusion");
-
-  const conclusionResult = await step?.ai.wrap(
-    "generate-conclusion",
-    async () => {
-      return await generateObject({
-        model: vercelOpenAI("gpt-4o"),
-        schema: z.object({
-          conclusion: z.string().describe("Complete conclusion for the report"),
-        }),
-        prompt: `
-        You are a research expert writing the conclusion to a comprehensive report.
-        
-        TOPIC: ${topic}
-        REPORT TITLE: ${outline.title}
-        CONCLUSION GUIDANCE: ${outline.conclusion}
-        
-        REPORT SECTIONS:
-        ${outline.sections
-          .map((section: any) => `- ${section.title}: ${section.description}`)
-          .join("\n")}
-        
-        Write a complete conclusion for the report that:
-        1. Summarizes the key findings and insights from the research
-        2. Connects these findings back to the original purpose of the report
-        3. Discusses broader implications of the research
-        4. Addresses limitations or gaps in the current research
-        5. Suggests directions for future research or investigation
-        6. Ends with a strong closing statement about the significance of the work
-        
-        The conclusion should synthesize rather than merely summarize, providing a coherent 
-        closing to the report that leaves readers with a clear understanding of the research's 
-        value and implications. Use markdown formatting as appropriate.
-      `,
-      });
-    }
-  );
-
-  return (
-    conclusionResult?.object?.conclusion ||
-    "# Conclusion\n\nThe conclusion could not be generated."
-  );
+  return editResult?.text || "Error: Could not generate edited report.";
 }
 
 /**
@@ -313,8 +288,6 @@ export const generateReportTool = createTool({
   name: "generate_report",
   description: "Generate a comprehensive research report",
   handler: async ({}, { network, step }) => {
-    if (!network) return { error: "Network state unavailable" };
-
     const state = network.state.data as NetworkState;
     const { topic, reasoningStages = [] } = state;
 
@@ -339,7 +312,18 @@ export const generateReportTool = createTool({
         };
       }
 
-      // 2. Generate report outline
+      // 2. Build global citation map & references list
+      const uniqueFindings = collectUniqueSources(
+        state.reasoningStages as ReasoningStage[]
+      );
+      const citationMap = assignCitationNumbers(uniqueFindings);
+      state.citations = citationMap; // persist in state
+
+      const referenceLines = uniqueFindings.map((f, idx) =>
+        formatCitationIEEE(f, idx + 1)
+      );
+
+      // 3. Generate report outline
       const outline = await generateReportOutline({
         stageAnalyses,
         topic: topic || "Unknown topic",
@@ -348,7 +332,7 @@ export const generateReportTool = createTool({
 
       logInfo(`Generated outline with ${outline.sections.length} sections`);
 
-      // 3. Generate all sections in parallel
+      // 4. Generate all sections in parallel
       logInfo(`Generating ${outline.sections.length} sections in parallel`);
       const generateSectionPromises = outline.sections.map((section: any) =>
         generateSection({
@@ -356,6 +340,7 @@ export const generateReportTool = createTool({
           outline,
           stageAnalyses,
           topic: topic || "Unknown topic",
+          referenceLines,
           step,
         })
       );
@@ -368,41 +353,59 @@ export const generateReportTool = createTool({
         logInfo(`Generated content for section: ${section.title}`);
       });
 
-      // 4. Generate introduction and conclusion
-      const introduction = await generateIntroduction({
-        outline,
-        topic: topic || "Unknown topic",
-        step,
-      });
-
-      const conclusion = await generateConclusion({
-        outline,
-        topic: topic || "Unknown topic",
-        step,
-      });
-
-      // 5. Assemble final report in markdown
-      const finalReport = `
+      // 5. Assemble draft report in markdown
+      const draftReport = `
 # ${outline.title}
-
-${introduction}
 
 ${sections.join("\n\n")}
 
-${conclusion}
+## References
+
+${referenceLines.join("<br/>\n")}
 `;
 
-      // Update network state
+      logInfo("Draft report assembled, proceeding to editing phase");
+
+      // 6. Edit and polish the draft report
+      const finalReport = await editReport({
+        draftReport,
+        stageAnalyses,
+        topic: topic || "Unknown topic",
+        step,
+      });
+
+      // Validate that inline citation numbers don't exceed reference list length
+      try {
+        const usedNumbers = Array.from(
+          new Set(
+            Array.from(finalReport.matchAll(/\[(\d+)\]/g)).map((m) =>
+              parseInt(m[1], 10)
+            )
+          )
+        );
+        const maxUsed = usedNumbers.length ? Math.max(...usedNumbers) : 0;
+        if (maxUsed > referenceLines.length) {
+          console.warn(
+            `Citation validation warning: inline citation ${maxUsed} exceeds reference list of length ${referenceLines.length}`
+          );
+        }
+      } catch (err) {
+        console.warn("Citation validation error", err);
+      }
+
+      // Update network state with both versions
       network.state.data = {
         ...state,
+        draftReport,
         finalReport,
       };
 
-      logInfo("✅ Report generation complete!");
+      logInfo("✅ Report generation and editing complete!");
 
       return {
         success: true,
-        reportLength: finalReport.length,
+        draftLength: draftReport.length,
+        finalLength: finalReport.length,
         sectionCount: outline.sections.length,
       };
     } catch (error) {

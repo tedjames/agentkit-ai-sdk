@@ -10,6 +10,7 @@ import {
   ReasoningTree,
   Finding,
 } from "../deep-research";
+import { formatCitationIEEE, assignCitationNumbers } from "./citations";
 
 // Initialize Exa client
 const exa = new Exa(process.env.EXA_API_KEY || "");
@@ -200,6 +201,13 @@ async function researchNode({
       state.searchedUrls = new Set<string>();
     }
 
+    // Log cache status at start
+    logInfo(
+      `Cache status - SearchedUrls: ${
+        state.searchedUrls.size
+      }, AnalysisCache: ${state.analysisCache?.size || 0}`
+    );
+
     // Prepare the search query by combining the stage context and the specific query
     const searchQuery = `${topic} - ${node.query}`;
     logInfo(`Executing Exa search: "${searchQuery}"`);
@@ -254,7 +262,9 @@ async function researchNode({
           state.searchedUrls.has(result.url) &&
           state.analysisCache?.has(result.url)
         ) {
-          logInfo(`Reusing analysis for duplicate URL: ${result.url}`);
+          logInfo(
+            `🔄 CACHE HIT: Reusing analysis for duplicate URL: ${result.url}`
+          );
 
           // Reuse the existing analysis
           findings.push({
@@ -264,6 +274,11 @@ async function researchNode({
               (result.text.length > 1000 ? "..." : ""),
             relevanceScore: 0.8, // Default score
             analysis: state.analysisCache.get(result.url),
+            title: result.title || null,
+            author: result.author || null,
+            publishedDate: result.publishedDate || null,
+            favicon: result.favicon || null,
+            image: result.image || null,
           });
 
           // If we have enough findings already, we can stop
@@ -275,13 +290,16 @@ async function researchNode({
 
         // Skip already seen URLs (that don't have cached analysis)
         if (state.searchedUrls.has(result.url)) {
-          logInfo(`Skipping duplicate URL: ${result.url}`);
+          logInfo(
+            `⏭️  SKIP: Already seen URL without cached analysis: ${result.url}`
+          );
           continue;
         }
 
         // Track this URL
         state.searchedUrls.add(result.url);
         dedupedResults.push(result);
+        logInfo(`✅ NEW URL: Added to processing queue: ${result.url}`);
 
         // Stop if we have enough unique results
         if (dedupedResults.length >= 3) break;
@@ -320,6 +338,7 @@ async function researchNode({
           state.analysisCache = new Map<string, string>();
         }
         state.analysisCache.set(result.url, analysis);
+        logInfo(`💾 CACHED: Analysis saved for ${result.url}`);
 
         // Create a finding with the analysis
         findings.push({
@@ -329,71 +348,20 @@ async function researchNode({
             (result.text.length > 1000 ? "..." : ""),
           relevanceScore: 0.8, // Default score
           analysis, // Include the analysis with the finding
+          title: result.title || null,
+          author: result.author || null,
+          publishedDate: result.publishedDate || null,
+          favicon: result.favicon || null,
+          image: result.image || null,
         });
 
         logInfo(`Created finding with analysis for ${result.url}`);
       });
     }
 
-    // If we couldn't get any findings from Exa, generate fallback findings
+    // If we couldn't get any findings from Exa, return an empty array. No fallback generation.
     if (findings.length === 0) {
-      logInfo("⚠️ No Exa results found, generating fallback findings");
-
-      const fallbackFindings = await step?.ai.wrap(
-        "generate-fallback-findings",
-        async () => {
-          return await generateObject({
-            model: vercelOpenAI("gpt-4o"),
-            schema: z.object({
-              findings: z
-                .array(
-                  z.object({
-                    source: z
-                      .string()
-                      .describe("A plausible source for this information"),
-                    content: z.string().describe("The content of the finding"),
-                    relevanceScore: z
-                      .number()
-                      .min(0)
-                      .max(1)
-                      .describe(
-                        "How relevant this finding is to the query (0-1)"
-                      ),
-                    analysis: z
-                      .string()
-                      .describe("Analysis of this generated finding"),
-                  })
-                )
-                .length(3),
-            }),
-            prompt: `
-            You are a research expert generating plausible research findings when no search results are available.
-            
-            TOPIC: ${topic}
-            STAGE: ${stage.name}
-            QUERY: ${node.query}
-            REASONING BEHIND QUERY: ${node.reasoning || "No reasoning provided"}
-            
-            Generate exactly 3 detailed, plausible research findings for this query.
-            For each finding:
-            1. Create a realistic source (like a research paper, website, book, etc.)
-            2. Write detailed, specific content that directly addresses the query
-            3. Assign a relevance score between 0-1 based on how well it answers the query
-            4. Include an analysis of the finding that highlights key points and evaluates the information
-            
-            Make the content specific and detailed as if it was actually retrieved from real sources.
-            Note: These should represent your best knowledge as an AI, but acknowledge these are not from real-time web searches.
-          `,
-          });
-        }
-      );
-
-      const fallbackResults = fallbackFindings?.object?.findings || [];
-      logInfo(
-        `Generated ${fallbackResults.length} fallback findings with analyses`
-      );
-
-      return fallbackResults;
+      logInfo("⚠️ No Exa results found for this query");
     }
 
     return findings;
@@ -415,24 +383,52 @@ async function generateFollowUpQueries({
   stage,
   topic,
   step,
+  maxBreadth = 3, // Default to 3 if not provided
 }: {
   initialFindings: Finding[];
   originalQueries: string[];
   stage: ReasoningStage;
   topic: string;
   step?: any;
+  maxBreadth?: number;
 }): Promise<any> {
   logInfo(
-    `Generating follow-up queries based on ${initialFindings.length} findings`
+    `Generating follow-up queries based on ${initialFindings.length} findings (maxBreadth: ${maxBreadth})`
   );
 
   // Extract all analyses from the findings
   const allAnalyses = initialFindings
     .filter((finding) => finding.analysis)
-    .map(
-      (finding, index) =>
-        `ANALYSIS ${index + 1} (from ${finding.source}):\n${finding.analysis}`
-    );
+    .map((finding) => finding as Finding);
+
+  // Build citation numbering for this stage based on first appearance order
+  const citationMap = assignCitationNumbers(
+    allAnalyses.filter(
+      (f, idx, arr) => arr.findIndex((x) => x.source === f.source) === idx
+    )
+  );
+
+  logInfo(
+    `Stage ${stage.name}: built citation map with ${citationMap.size} sources`
+  );
+
+  // Build reference list markdown lines
+  const referenceLines = Array.from(citationMap.entries()).map(([url, num]) => {
+    const finding = allAnalyses.find((f) => f.source === url)!;
+    return formatCitationIEEE(finding, num);
+  });
+
+  logInfo(`Reference lines preview:\n${referenceLines.slice(0, 5).join("\n")}`);
+
+  logInfo(
+    `Stage ${stage.name}: reference list lines count ${referenceLines.length}`
+  );
+
+  // Build analyses with citation prefixes
+  const analysesWithCites = allAnalyses.map((finding) => {
+    const num = citationMap.get(finding.source);
+    return `[${num}] ANALYSIS (from ${finding.source}):\n${finding.analysis}`;
+  });
 
   const followupResult = await step?.ai.wrap(
     "generate-followup-queries",
@@ -455,7 +451,10 @@ async function generateFollowUpQueries({
                   ),
               })
             )
-            .length(3),
+            .length(maxBreadth)
+            .describe(
+              `Exactly ${maxBreadth} follow-up queries that will deepen the research`
+            ),
         }),
         prompt: `
         You are a research expert generating follow-up queries based on initial research findings.
@@ -467,10 +466,13 @@ async function generateFollowUpQueries({
         ORIGINAL QUERIES THAT HAVE ALREADY BEEN RESEARCHED:
         ${originalQueries.map((q, i) => `${i + 1}. ${q}`).join("\n")}
         
-        Based on the following analyses from initial research:
-        ${allAnalyses.join("\n\n")}
+        SOURCES (use [n] inline when citing):
+        ${referenceLines.join("\n")}
         
-        Generate exactly 3 follow-up queries that will deepen the research further.
+        Based on the following analyses from all research findings (each prefixed with its citation number):
+        ${analysesWithCites.join("\n\n")}
+        
+        Generate exactly ${maxBreadth} follow-up queries that will deepen the research further.
         These queries should:
         1. Address important gaps or open questions from the initial findings
         2. Explore promising areas identified but not fully covered in the initial research
@@ -508,10 +510,30 @@ async function generateStageAnalysis({
   // Extract all analyses from the findings
   const allAnalyses = allFindings
     .filter((finding) => finding.analysis)
-    .map(
-      (finding, index) =>
-        `ANALYSIS ${index + 1} (from ${finding.source}):\n${finding.analysis}`
-    );
+    .map((finding) => finding as Finding);
+
+  // Build citation numbering for this stage based on first appearance order
+  const citationMap = assignCitationNumbers(
+    allAnalyses.filter(
+      (f, idx, arr) => arr.findIndex((x) => x.source === f.source) === idx
+    )
+  );
+
+  logInfo(
+    `generateStageAnalysis: citation map has ${citationMap.size} entries`
+  );
+
+  // Build reference list markdown lines
+  const referenceLines = Array.from(citationMap.entries()).map(([url, num]) => {
+    const finding = allAnalyses.find((f) => f.source === url)!;
+    return formatCitationIEEE(finding, num);
+  });
+
+  // Build analyses with citation prefixes
+  const analysesWithCites = allAnalyses.map((finding) => {
+    const num = citationMap.get(finding.source);
+    return `[${num}] ANALYSIS (from ${finding.source}):\n${finding.analysis}`;
+  });
 
   const analysisResult = await step?.ai.wrap(
     "generate-stage-analysis",
@@ -530,8 +552,11 @@ async function generateStageAnalysis({
         STAGE: ${stage.name}
         STAGE DESCRIPTION: ${stage.description}
         
-        Based on the following analyses from all research findings:
-        ${allAnalyses.join("\n\n")}
+        SOURCES (use [n] inline when citing):
+        ${referenceLines.join("\n")}
+        
+        Based on the following analyses from all research findings (each prefixed with its citation number):
+        ${analysesWithCites.join("\n\n")}
         
         Generate a comprehensive analysis of this entire research stage that:
         1. Synthesizes key insights across all findings
@@ -546,6 +571,8 @@ async function generateStageAnalysis({
         of the topic through our research. It should be thorough yet focused on the most significant insights.
 
         This should be a comprehensive 6-10 paragraphs long report
+
+        When writing your stage analysis, cite information inline using the IEEE style [n] where n corresponds to the source number above. End your analysis with a **References** section that repeats the list exactly as provided above.
       `,
       });
     }
@@ -572,19 +599,35 @@ export const buildReasoningTreeTool = createTool({
     const {
       topic,
       context,
-      maxDepth = 2,
-      maxBreadth = 3, // Now using 3 nodes for our approach
+      configuration,
       reasoningStages = [],
       currentStageIndex = 0,
     } = state;
+
+    if (!configuration) {
+      return { error: "Configuration is required but not provided" };
+    }
+
+    const { maxDepth, maxBreadth } = configuration;
 
     logSection("BUILD REASONING TREE TOOL");
     logInfo(`Topic: ${topic}`);
     logInfo(`Stage: ${currentStageIndex + 1}/${reasoningStages.length}`);
     logInfo(`MaxDepth: ${maxDepth}, MaxBreadth: ${maxBreadth}`);
 
-    // Reset deduplication sets at the start of a new stage
-    if (state.newStage) {
+    // Clear caches at the start of each stage
+    // We check if this is the first call for this stage by looking at whether any nodes have findings
+    const currentStage = reasoningStages[currentStageIndex];
+    const isNewStage =
+      currentStage &&
+      currentStage.reasoningTree?.nodes &&
+      currentStage.reasoningTree.nodes.every(
+        (node) => !node.findings || node.findings.length === 0
+      );
+
+    if (isNewStage) {
+      logInfo("Starting new stage - clearing URL and analysis caches");
+
       if (!state.searchedUrls) {
         state.searchedUrls = new Set<string>();
       } else {
@@ -597,7 +640,9 @@ export const buildReasoningTreeTool = createTool({
         state.analysisCache.clear();
       }
 
-      state.newStage = false;
+      logInfo(
+        `Caches cleared. SearchedUrls: ${state.searchedUrls.size}, AnalysisCache: ${state.analysisCache.size}`
+      );
     }
 
     // Check if we have stages to work with
@@ -608,7 +653,6 @@ export const buildReasoningTreeTool = createTool({
     }
 
     // Get the current stage
-    const currentStage = reasoningStages[currentStageIndex];
     if (!currentStage) {
       return { error: `Invalid stage index: ${currentStageIndex}` };
     }
@@ -634,8 +678,11 @@ export const buildReasoningTreeTool = createTool({
       );
 
       if (depthZeroNodesWithoutFindings.length > 0) {
-        // Process up to 3 depth 0 nodes in parallel
-        const nodesToProcess = depthZeroNodesWithoutFindings.slice(0, 3);
+        // Process up to maxBreadth depth 0 nodes in parallel
+        const nodesToProcess = depthZeroNodesWithoutFindings.slice(
+          0,
+          maxBreadth
+        );
         logInfo(
           `Researching ${nodesToProcess.length} depth 0 nodes in parallel`
         );
@@ -707,15 +754,15 @@ export const buildReasoningTreeTool = createTool({
         };
       }
 
-      // Step 2: Check if all depth 0 nodes have findings and follow-up queries have not been generated
+      // Step 2: Check if all depth 0 nodes have findings and we haven't reached maxDepth
       const allDepthZeroNodes = tree.nodes.filter((node) => node.depth === 0);
       const allDepthZeroComplete = allDepthZeroNodes.every(
         (node) => node.findings && node.findings.length > 0
       );
-      const noDepthOneNodes =
-        tree.nodes.filter((node) => node.depth === 1).length === 0;
+      const currentMaxDepth = Math.max(...tree.nodes.map((node) => node.depth));
+      const canAddMoreDepth = currentMaxDepth < maxDepth - 1;
 
-      if (allDepthZeroComplete && noDepthOneNodes) {
+      if (allDepthZeroComplete && canAddMoreDepth) {
         // Collect all findings from depth 0 nodes
         const allDepthZeroFindings = allDepthZeroNodes.flatMap(
           (node) => node.findings
@@ -731,26 +778,31 @@ export const buildReasoningTreeTool = createTool({
           stage: currentStage,
           topic: topic || "Unknown topic",
           step,
+          maxBreadth, // Pass maxBreadth from configuration
         });
 
-        // Create depth 1 nodes from follow-up queries
-        const depthOneNodes: ReasoningNode[] = followupQueries.map((q: any) => {
-          const nodeId = generateNodeId();
-          return {
-            id: nodeId,
-            parentId: null, // These are not children of specific depth 0 nodes, but follow-ups to all depth 0
-            depth: 1,
-            query: q.query,
-            reasoning: q.reasoning,
-            findings: [], // No findings yet
-            children: [], // No children
-          };
-        });
+        // Create depth 1 nodes from follow-up queries (limited by maxBreadth)
+        const depthOneNodes: ReasoningNode[] = followupQueries
+          .slice(0, maxBreadth)
+          .map((q: any) => {
+            const nodeId = generateNodeId();
+            return {
+              id: nodeId,
+              parentId: null, // These are not children of specific depth 0 nodes, but follow-ups to all depth 0
+              depth: currentMaxDepth + 1,
+              query: q.query,
+              reasoning: q.reasoning,
+              findings: [], // No findings yet
+              children: [], // No children
+            };
+          });
 
         // Add depth 1 nodes to the tree
         tree.nodes = [...tree.nodes, ...depthOneNodes];
         logInfo(
-          `Added ${depthOneNodes.length} depth 1 follow-up nodes to the tree`
+          `Added ${depthOneNodes.length} depth ${
+            currentMaxDepth + 1
+          } follow-up nodes to the tree`
         );
 
         // Visualize the updated tree
@@ -774,24 +826,26 @@ export const buildReasoningTreeTool = createTool({
         };
       }
 
-      // Step 3: Research depth 1 nodes
-      const depthOneNodesForResearch = tree.nodes.filter(
+      // Step 3: Research nodes at deeper depths that don't have findings
+      const deeperNodesForResearch = tree.nodes.filter(
         (node) =>
-          node.depth === 1 && (!node.findings || node.findings.length === 0)
+          node.depth > 0 && (!node.findings || node.findings.length === 0)
       );
 
-      if (depthOneNodesForResearch.length > 0) {
-        // Process up to 3 depth 1 nodes in parallel to avoid rate limits
-        const nodesToProcess = depthOneNodesForResearch.slice(0, 3);
+      if (deeperNodesForResearch.length > 0) {
+        // Process up to maxBreadth nodes in parallel
+        const nodesToProcess = deeperNodesForResearch.slice(0, maxBreadth);
         logInfo(
-          `Researching ${nodesToProcess.length} depth 1 nodes in parallel`
+          `Researching ${nodesToProcess.length} deeper nodes in parallel`
         );
 
         // Research nodes in parallel
         const researchResults = await Promise.all(
           nodesToProcess.map(async (nodeToResearch) => {
             logInfo(
-              `Researching depth 1 node: ${nodeToResearch.id.substring(
+              `Researching depth ${
+                nodeToResearch.depth
+              } node: ${nodeToResearch.id.substring(
                 0,
                 8
               )}... with query: ${nodeToResearch.query.substring(0, 50)}...`
@@ -844,7 +898,7 @@ export const buildReasoningTreeTool = createTool({
 
         return {
           success: true,
-          message: `Researched ${researchResults.length} depth 1 nodes in parallel`,
+          message: `Researched ${researchResults.length} deeper nodes in parallel`,
           researchedNodeCount: researchResults.length,
           totalFindingsCount: researchResults.reduce(
             (sum, { findings }) => sum + findings.length,
@@ -890,7 +944,6 @@ export const buildReasoningTreeTool = createTool({
             currentStage,
             ...reasoningStages.slice(currentStageIndex + 1),
           ],
-          newStage: true, // Mark that we'll move to a new stage next
         };
 
         return {

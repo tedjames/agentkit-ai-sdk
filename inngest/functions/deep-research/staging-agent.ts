@@ -32,19 +32,24 @@ export const stagingTool = createTool({
     if (!network) return { error: "Network state unavailable" };
 
     const state = network.state.data as NetworkState;
-    const { topic, context, maxDepth = 3, maxBreadth = 5 } = state;
+    const { topic, context, configuration } = state;
+
+    if (!configuration) {
+      return { error: "Configuration is required but not provided" };
+    }
+
+    const { stageCount, queriesPerStage } = configuration;
 
     console.log("=== STAGING TOOL START ===");
-    console.log(
-      `Topic: ${topic}, MaxDepth: ${maxDepth}, MaxBreadth: ${maxBreadth}`
-    );
+    console.log(`Topic: ${topic}`);
+    console.log(`Configuration: ${JSON.stringify(configuration)}`);
 
     try {
       // Step 1: Use self-discover prompting to explore research approaches
       const exploreResult = await selfDiscoverPrompting({
         reasoningModules,
         context: topic ?? "Unknown topic",
-        numToSelect: 9, // Use 9 questions to deeply understand the topic from multiple angles
+        numToSelect: stageCount * queriesPerStage, // Scale questions based on configuration
         skipAnswering: true, // Skip the answering phase for efficiency
         step,
       });
@@ -85,15 +90,15 @@ export const stagingTool = createTool({
                             ),
                         })
                       )
-                      .length(3)
+                      .length(queriesPerStage)
                       .describe(
-                        `Exactly 3 initial research queries for this stage`
+                        `Exactly ${queriesPerStage} initial research queries for this stage`
                       ),
                   })
                 )
-                .length(3)
+                .length(stageCount)
                 .describe(
-                  "An array of exactly 3 reasoning stages, each building on the previous"
+                  `An array of exactly ${stageCount} reasoning stages, each building on the previous`
                 ),
             }),
             prompt: `
@@ -110,7 +115,7 @@ export const stagingTool = createTool({
               .map((question, i) => `QUESTION ${i + 1}: ${question}`)
               .join("\n\n")}
             
-            Part 1: Design exactly 3 distinct reasoning stages that will guide a systematic exploration of this topic.
+            Part 1: Design exactly ${stageCount} distinct reasoning stages that will guide a systematic exploration of this topic.
             Each stage should:
             1. Represent a unique perspective or analytical approach
             2. Build upon insights gathered research in a specific sequence of stages such as to eventually compile all findings into a single report.
@@ -120,7 +125,7 @@ export const stagingTool = createTool({
             The stages should follow a logical progression where insights from earlier stages inform later ones.
             Be specific about what each stage explores and why it's important to the overall research.
             
-            Part 2: For EACH stage, generate exactly ${maxBreadth} specific research queries.
+            Part 2: For EACH stage, generate exactly ${queriesPerStage} specific research queries.
             Each query should:
             1. Be focused and relevant to that stage - not too broad or general
             2. Address a different aspect of the stage's exploration
@@ -198,32 +203,27 @@ export const stagingTool = createTool({
       console.error(error);
 
       // Create fallback stages in case of error
-      const fallbackStages: ReasoningStage[] = [
-        {
-          id: 0,
-          name: "Initial Exploration",
-          description: `Fundamental understanding of ${topic}`,
+      const fallbackStages: ReasoningStage[] = Array.from(
+        { length: stageCount },
+        (_, i) => ({
+          id: i,
+          name:
+            i === 0
+              ? "Initial Exploration"
+              : i === stageCount - 1
+              ? "Synthesis & Implications"
+              : `Stage ${i + 1} Analysis`,
+          description:
+            i === 0
+              ? `Fundamental understanding of ${topic}`
+              : i === stageCount - 1
+              ? `Synthesis of findings and exploration of implications for ${topic}`
+              : `Critical examination of key aspects of ${topic}`,
           reasoningTree: { nodes: [] },
           reasoningComplete: false,
           analysisComplete: false,
-        },
-        {
-          id: 1,
-          name: "Critical Analysis",
-          description: `Critical examination of key aspects of ${topic}`,
-          reasoningTree: { nodes: [] },
-          reasoningComplete: false,
-          analysisComplete: false,
-        },
-        {
-          id: 2,
-          name: "Synthesis & Implications",
-          description: `Synthesis of findings and exploration of implications for ${topic}`,
-          reasoningTree: { nodes: [] },
-          reasoningComplete: false,
-          analysisComplete: false,
-        },
-      ];
+        })
+      );
 
       // Update the network state with fallback stages
       network.state.data = {
@@ -256,13 +256,14 @@ export const stagingAgent = createAgent<NetworkState>({
 Your primary responsibility is to create a logical sequence of reasoning stages for exploring a research topic.
 
 When invoked, you will:
-1. Analyze the research topic provided in the network state
+1. Analyze the research topic and configuration provided in the network state
 2. Create a series of distinct reasoning stages using the 'create_reasoning_stages' tool
 3. Each stage should build upon insights from previous stages
 4. Stages should progress from fundamental understanding to specialized insights
-5. Each stage will also include initial research queries (depth 0 nodes)
+5. Each stage will include a configurable number of initial research queries (depth 0 nodes)
 
 Your goal is to provide a structured framework that guides the subsequent research process.
+The number of stages and queries per stage will be determined by the configuration settings.
 Use the 'create_reasoning_stages' tool to generate and store these stages in the network state.`,
   model: openai({ model: "gpt-4o" }),
   tools: [stagingTool],
@@ -275,6 +276,7 @@ Use the 'create_reasoning_stages' tool to generate and store these stages in the
         console.log(
           `Topic: ${state.topic}, Context: ${state.context || "None"}`
         );
+        console.log(`Configuration: ${JSON.stringify(state.configuration)}`);
       }
 
       return {
@@ -291,7 +293,6 @@ Use the 'create_reasoning_stages' tool to generate and store these stages in the
         // Ensure stagingComplete is set to true
         if (state.reasoningStages && state.reasoningStages.length > 0) {
           state.stagingComplete = true;
-          state.newStage = true; // Set flag to trigger stage event publishing
         }
       }
 

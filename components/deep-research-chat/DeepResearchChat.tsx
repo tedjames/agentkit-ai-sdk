@@ -4,8 +4,9 @@ import { useState, useRef, useEffect } from "react";
 import { DeepResearchMessage } from "./DeepResearchMessage";
 import { DeepResearchCard } from "./DeepResearchCard";
 import { ChatHeader } from "../chat/ChatHeader";
-import { ChevronDown, Loader2 } from "lucide-react";
+import { Brain, Paperclip, ChevronDown, ArrowUp, Loader2 } from "lucide-react";
 import { ResearchStage, ResearchUpdate } from "./types";
+import { ResearchConfiguration } from "./ResearchConfiguration";
 
 interface Finding {
   source: string;
@@ -26,6 +27,22 @@ interface ReasoningNode {
   children: string[];
 }
 
+// Add workflow options
+const workflowOptions = [
+  { name: "Deep Research", deepResearchEnabled: true },
+  { name: "Simple Search", deepResearchEnabled: false },
+  { name: "Technical Research", deepResearchEnabled: true },
+  { name: "General Research", deepResearchEnabled: false }
+];
+
+// Add configuration interface
+interface ResearchConfiguration {
+  maxDepth: number;
+  maxBreadth: number;
+  stageCount: number;
+  queriesPerStage: number;
+}
+
 export function DeepResearchChat() {
   const [updates, setUpdates] = useState<ResearchUpdate[]>([]);
   const [stages, setStages] = useState<ResearchStage[]>([]);
@@ -39,6 +56,26 @@ export function DeepResearchChat() {
   const [isInitializing, setIsInitializing] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const thumbRef = useRef<HTMLDivElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [startY, setStartY] = useState(0);
+  const [startScrollTop, setStartScrollTop] = useState(0);
+  const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
+  const [selectedWorkflow, setSelectedWorkflow] = useState("Deep Research");
+  const workflowMenuRef = useRef<HTMLDivElement>(null);
+  const [isConfigExpanded, setIsConfigExpanded] = useState(false);
+  const [configuration, setConfiguration] = useState<ResearchConfiguration>({
+    maxDepth: 2,
+    maxBreadth: 3,
+    stageCount: 3,
+    queriesPerStage: 3
+  });
+
+  // Add helper to check if current workflow has deep research enabled
+  const isDeepResearchEnabled = () => {
+    const currentWorkflow = workflowOptions.find(w => w.name === selectedWorkflow);
+    return currentWorkflow?.deepResearchEnabled ?? false;
+  };
 
   // Get the latest update
   const latestUpdate = updates.length > 0 ? updates[updates.length - 1] : null;
@@ -89,11 +126,177 @@ export function DeepResearchChat() {
     scrollToBottom();
   }, [updates]);
 
+  // Function to resize textarea
+  const resizeTextarea = () => {
+    const textarea = inputRef.current;
+    if (!textarea) return;
+    
+    // Reset the height to auto to get the correct scrollHeight
+    textarea.style.height = 'auto';
+    
+    // Calculate new height (with a max of ~6 lines)
+    const lineHeight = 24; // Approximated line height in pixels
+    const maxHeight = lineHeight * 6;
+    const newHeight = Math.min(textarea.scrollHeight, maxHeight);
+    
+    textarea.style.height = `${newHeight}px`;
+    
+    // Update custom scrollbar
+    updateCustomScrollbar();
+  };
+
+  // Function to update custom scrollbar position and size
+  const updateCustomScrollbar = () => {
+    const textarea = inputRef.current;
+    const thumb = thumbRef.current;
+    
+    if (!textarea || !thumb) return;
+    
+    const scrollPercentage = textarea.scrollTop / (textarea.scrollHeight - textarea.clientHeight);
+    const thumbHeight = Math.max(20, (textarea.clientHeight / textarea.scrollHeight) * textarea.clientHeight);
+    
+    thumb.style.height = `${thumbHeight}px`;
+    
+    // Only show thumb if content exceeds max height
+    if (textarea.scrollHeight > textarea.clientHeight) {
+      thumb.style.display = 'block';
+      const thumbPosition = scrollPercentage * (textarea.clientHeight - thumbHeight);
+      thumb.style.top = `${thumbPosition}px`;
+    } else {
+      thumb.style.display = 'none';
+    }
+  };
+
+  // Handle thumb drag start
+  const handleThumbMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+    setStartY(e.clientY);
+    
+    const textarea = inputRef.current;
+    if (textarea) {
+      setStartScrollTop(textarea.scrollTop);
+    }
+  };
+
+  // Handle thumb dragging
+  const handleMouseMove = (e: MouseEvent) => {
+    if (!isDragging) return;
+    
+    const textarea = inputRef.current;
+    if (!textarea) return;
+    
+    const deltaY = e.clientY - startY;
+    const scrollFactor = textarea.scrollHeight / textarea.clientHeight;
+    
+    textarea.scrollTop = startScrollTop + (deltaY * scrollFactor);
+    updateCustomScrollbar();
+  };
+
+  // Handle thumb drag end
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  // Handle track click to jump to position
+  const handleTrackClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const track = e.currentTarget;
+    const textarea = inputRef.current;
+    const thumb = thumbRef.current;
+    
+    if (!textarea || !thumb) return;
+    
+    // Get relative position in the track
+    const rect = track.getBoundingClientRect();
+    const relativeY = e.clientY - rect.top;
+    
+    // Calculate thumb height
+    const thumbHeight = Math.max(20, (textarea.clientHeight / textarea.scrollHeight) * textarea.clientHeight);
+    
+    // Calculate new scroll position
+    const scrollableHeight = textarea.scrollHeight - textarea.clientHeight;
+    const percentage = (relativeY - thumbHeight / 2) / (textarea.clientHeight - thumbHeight);
+    const scrollAmount = percentage * scrollableHeight;
+    
+    // Update scroll position
+    textarea.scrollTop = Math.max(0, Math.min(scrollAmount, scrollableHeight));
+    updateCustomScrollbar();
+  };
+
+  // Handle textarea scroll
+  const handleTextareaScroll = () => {
+    updateCustomScrollbar();
+  };
+
+  // Add and remove mouse event listeners for dragging
+  useEffect(() => {
+    if (isDragging) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, startY, startScrollTop]);
+
+  // Resize textarea when input changes
+  useEffect(() => {
+    resizeTextarea();
+  }, [userQuery]);
+
+  // Initialize textarea on mount
+  useEffect(() => {
+    if (inputRef.current) {
+      resizeTextarea();
+      updateCustomScrollbar();
+    }
+  }, []);
+
+  // Add brain pulse keyframes
+  const brainPulseKeyframes = `
+    @keyframes brainPulse {
+      0% {
+        filter: drop-shadow(0 0 2px rgba(219, 39, 119, 0.3));
+        opacity: 0.7;
+      }
+      50% {
+        filter: drop-shadow(0 0 6px rgba(219, 39, 119, 0.8));
+        opacity: 1;
+      }
+      100% {
+        filter: drop-shadow(0 0 2px rgba(219, 39, 119, 0.3));
+        opacity: 0.7;
+      }
+    }
+  `;
+
+  // Close workflow menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (workflowMenuRef.current && !workflowMenuRef.current.contains(event.target as Node)) {
+        setWorkflowMenuOpen(false);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  // Handle workflow change
+  const handleWorkflowChange = (workflowName: string) => {
+    setSelectedWorkflow(workflowName);
+  };
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!userQuery.trim()) return;
 
     console.log("Starting research with query:", userQuery);
+    console.log("Using configuration:", configuration);
 
     // Hide the input with animation
     setIsInputVisible(false);
@@ -109,7 +312,8 @@ export function DeepResearchChat() {
         method: "POST",
         body: JSON.stringify({ 
           topic: userQuery,
-          useV2: true
+          useV2: true,
+          configuration
         }),
       });
 
@@ -355,6 +559,68 @@ export function DeepResearchChat() {
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-zinc-900">
+      <style>{brainPulseKeyframes}</style>
+      <style>
+        {`
+          /* Custom scrollbar styles */
+          .custom-scrollbar {
+            position: relative;
+            overflow-y: auto;
+            scrollbar-width: none; /* Firefox */
+          }
+          
+          .custom-scrollbar::-webkit-scrollbar {
+            display: none; /* WebKit browsers */
+          }
+          
+          /* Custom scrollbar track */
+          .scrollbar-track {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 8px;
+            height: 100%;
+            background-color: transparent;
+            z-index: 10;
+            cursor: pointer;
+          }
+          
+          /* Custom scrollbar thumb */
+          .scrollbar-thumb {
+            position: absolute;
+            width: 6px;
+            right: 1px;
+            border-radius: 3px;
+            background-color: rgba(156, 163, 175, 0.5);
+            cursor: grab;
+            transition: background-color 0.2s, width 0.2s, right 0.2s;
+          }
+          
+          .scrollbar-thumb:hover,
+          .scrollbar-thumb:active {
+            background-color: rgba(156, 163, 175, 0.8);
+            width: 8px;
+            right: 0;
+          }
+          
+          .scrollbar-thumb.dragging {
+            cursor: grabbing;
+            background-color: rgba(156, 163, 175, 0.8);
+            width: 8px;
+            right: 0;
+          }
+          
+          .dark .scrollbar-thumb {
+            background-color: rgba(161, 161, 170, 0.5);
+          }
+          
+          .dark .scrollbar-thumb:hover,
+          .dark .scrollbar-thumb:active,
+          .dark .scrollbar-thumb.dragging {
+            background-color: rgba(161, 161, 170, 0.8);
+          }
+        `}
+      </style>
       <ChatHeader
         onNewChat={handleNewChat}
         onShareChat={() => {}}
@@ -408,6 +674,7 @@ export function DeepResearchChat() {
                       updates={updates}
                       selectedStage={selectedStage}
                       onStageSelect={setSelectedStage}
+                      configuration={configuration}
                     />
                   </div>
                 </div>
@@ -435,30 +702,151 @@ export function DeepResearchChat() {
         </div>
 
         {/* Input area */}
-        <div className="p-4 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800">
+        <div className="p-3 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 px-8">
           <form onSubmit={handleSubmit} className="relative">
-            <div className="w-full rounded-[24px] px-4 py-4 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-sm flex items-center gap-2">
-              <textarea 
-                ref={inputRef}
-                className="flex-1 bg-transparent border-none focus:ring-0 focus:outline-none text-zinc-900 dark:text-white placeholder-zinc-500 dark:placeholder-zinc-400 resize-none min-h-[24px] max-h-[200px] overflow-y-auto"
-                placeholder="Enter a research topic..."
-                value={userQuery}
-                onChange={(e) => setUserQuery(e.target.value)}
-                onKeyDown={handleKeyDown}
-                rows={1}
-                disabled={isLoading}
-              />
-              <button
-                type="submit"
-                className="px-4 py-2 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-full hover:bg-zinc-800 dark:hover:bg-zinc-200 focus:outline-none disabled:opacity-50 transition-all duration-200"
-                disabled={isLoading || !userQuery.trim()}
-              >
-                {isLoading ? (
-                  <div className="h-5 w-5 rounded-full border-2 border-white dark:border-zinc-900 border-t-transparent animate-spin" />
-                ) : (
-                  "Research"
-                )}
-              </button>
+            <div className="w-full rounded-[24px] px-2.5 pb-2.5 pt-5 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-sm flex flex-col">
+              {/* First row - Textarea with custom scrollbar */}
+              <div className="w-full mb-3 relative">
+                <div className="relative">
+                  <textarea 
+                    ref={inputRef}
+                    className="custom-scrollbar w-full px-2.5 pb-2 bg-transparent border-none focus:ring-0 focus:outline-none text-zinc-900 dark:text-white placeholder-zinc-500 dark:placeholder-zinc-400 resize-none min-h-[24px]"
+                    placeholder="Enter a research topic..."
+                    value={userQuery}
+                    onChange={(e) => {
+                      setUserQuery(e.target.value);
+                      resizeTextarea();
+                    }}
+                    onKeyDown={handleKeyDown}
+                    onScroll={handleTextareaScroll}
+                    rows={1}
+                    disabled={isLoading}
+                    style={{
+                      height: 'auto',
+                    }}
+                  />
+                  <div className="scrollbar-track" onClick={handleTrackClick}>
+                    <div 
+                      ref={thumbRef} 
+                      className={`scrollbar-thumb ${isDragging ? 'dragging' : ''}`}
+                      onMouseDown={handleThumbMouseDown}
+                    ></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Second row - All buttons */}
+              <div className="flex items-center justify-between">
+                {/* Left side buttons */}
+                <div className="flex items-center space-x-2">
+                  {/* Attachment button */}
+                  <button 
+                    type="button"
+                    className="py-2 px-2 rounded-2xl border border-zinc-300 dark:border-zinc-600 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700 focus:outline-none"
+                    disabled={isLoading}
+                  >
+                    <Paperclip size={16} className='rotate-[315deg]' />
+                  </button>
+
+                  {/* Research Configuration */}
+                  <ResearchConfiguration
+                    configuration={configuration}
+                    onConfigurationChange={setConfiguration}
+                    isExpanded={isConfigExpanded}
+                    onToggleExpand={() => setIsConfigExpanded(!isConfigExpanded)}
+                  />
+                  
+                  {/* Deep Research status indicator - only show if deep research is enabled */}
+                  {isDeepResearchEnabled() && (
+                    <div className="flex items-center py-2 px-3 rounded-full text-xs font-medium bg-violet-100 dark:bg-violet-900/20 text-violet-700 dark:text-violet-400 border border-violet-300 dark:border-violet-800/30">
+                      <style>
+                        {`
+                          .brain-gradient {
+                            stroke: url(#brainGradient);
+                          }
+                        `}
+                      </style>
+                      <svg width="0" height="0">
+                        <defs>
+                          <linearGradient id="brainGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stopColor="#db2777" />
+                            <stop offset="100%" stopColor="#7c3aed" />
+                          </linearGradient>
+                        </defs>
+                      </svg>
+                      <Brain 
+                        className="brain-gradient mr-1.5"
+                        size={16}
+                        style={{
+                          filter: "drop-shadow(0 0 2px rgba(219, 39, 119, 0.5))",
+                          animation: "brainPulse 2s infinite ease-in-out"
+                        }}
+                      />
+                      Deep Research
+                    </div>
+                  )}
+                </div>
+
+                {/* Right side buttons */}
+                <div className="flex items-center">
+                  {/* Workflow selector */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      className="py-1 px-3 rounded-full text-sm flex items-center text-zinc-800 dark:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700 focus:outline-none"
+                      onClick={() => setWorkflowMenuOpen(prev => !prev)}
+                      disabled={isLoading}
+                    >
+                      {selectedWorkflow}
+                      <ChevronDown size={16} className="ml-1" />
+                    </button>
+                    
+                    {/* Workflow dropdown menu */}
+                    {workflowMenuOpen && (
+                      <div 
+                        ref={workflowMenuRef}
+                        className="absolute bottom-full mb-1 right-0 w-48 bg-white dark:bg-zinc-800 rounded-lg shadow-lg border border-zinc-200 dark:border-zinc-700 z-10"
+                      >
+                        <ul className="py-1">
+                          {workflowOptions.map((workflow) => (
+                            <li key={workflow.name}>
+                              <button
+                                type="button"
+                                className="w-full text-left px-4 py-2 text-sm text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 flex items-center"
+                                onClick={() => {
+                                  handleWorkflowChange(workflow.name);
+                                  setWorkflowMenuOpen(false);
+                                }}
+                              >
+                                {workflow.name}
+                                {workflow.deepResearchEnabled && (
+                                  <Brain
+                                    className="brain-gradient ml-2"
+                                    size={12}
+                                  />
+                                )}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Submit button */}
+                  <button 
+                    type="submit"
+                    className="p-2 ml-1 rounded-full bg-zinc-200 dark:bg-zinc-700 text-zinc-800 dark:text-zinc-200 hover:bg-zinc-300 dark:hover:bg-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none"
+                    disabled={!userQuery.trim() || isLoading}
+                  >
+                    {isLoading ? (
+                      <div className="h-5 w-5 border-t-2 border-current rounded-full animate-spin"></div>
+                    ) : (
+                      <ArrowUp size={20} />
+                    )}
+                  </button>
+                </div>
+              </div>
             </div>
           </form>
         </div>
