@@ -30,15 +30,13 @@ export interface ReasoningNode {
   reasoning: string;
   findings: Finding[];
   reflection?: string;
-  relevanceScore?: number;
-  children: string[]; // Array of child node IDs
+  children: string[];
 }
 
 export interface Finding {
   source: string;
   content: string;
-  relevanceScore?: number;
-  analysis?: string; // Analysis of this specific finding
+  analysis?: string;
   title?: string | null;
   author?: string | null;
   publishedDate?: string | null;
@@ -86,7 +84,6 @@ export interface NetworkState {
 interface ProgressEventFinding {
   source: string;
   content: string;
-  relevanceScore?: number;
   analysis?: string;
   title?: string | null;
   author?: string | null;
@@ -103,8 +100,7 @@ interface ProgressEventNode {
   reasoning: string;
   findings: ProgressEventFinding[];
   reflection?: string;
-  relevanceScore?: number;
-  children: string[]; // Array of child node IDs
+  children: string[];
 }
 
 interface ProgressEventStage {
@@ -214,7 +210,6 @@ function publishProgressEvent({
             findings: node.findings.map((finding) => ({
               source: finding.source,
               content: finding.content,
-              relevanceScore: finding.relevanceScore,
               analysis: finding.analysis,
               title: finding.title ?? null,
               author: finding.author ?? null,
@@ -223,7 +218,6 @@ function publishProgressEvent({
               image: finding.image ?? null,
             })),
             reflection: node.reflection,
-            relevanceScore: node.relevanceScore,
             children: node.children,
           })),
         },
@@ -236,7 +230,6 @@ function publishProgressEvent({
       findings: findings?.map((finding) => ({
         source: finding.source,
         content: finding.content,
-        relevanceScore: finding.relevanceScore,
         analysis: finding.analysis,
         title: finding.title ?? null,
         author: finding.author ?? null,
@@ -259,11 +252,9 @@ function publishProgressEvent({
             findings: node.findings.map((finding) => ({
               source: finding.source,
               content: finding.content,
-              relevanceScore: finding.relevanceScore,
               analysis: finding.analysis,
             })),
             reflection: node.reflection,
-            relevanceScore: node.relevanceScore,
             children: node.children,
           })),
         },
@@ -451,11 +442,14 @@ export const deepResearchAgent = inngest.createFunction(
                     content:
                       finding.content.substring(0, 200) +
                       (finding.content.length > 200 ? "..." : ""),
-                    relevanceScore: finding.relevanceScore,
                     analysis: finding.analysis || "Analysis pending...",
+                    title: finding.title ?? null,
+                    author: finding.author ?? null,
+                    publishedDate: finding.publishedDate ?? null,
+                    favicon: finding.favicon ?? null,
+                    image: finding.image ?? null,
                   })),
                   reflection: node.reflection,
-                  relevanceScore: node.relevanceScore,
                   children: node.children,
                 })),
               },
@@ -593,7 +587,6 @@ export const deepResearchAgent = inngest.createFunction(
             node.findings.map((finding) => ({
               source: finding.source,
               content: finding.content,
-              relevanceScore: finding.relevanceScore,
               analysis:
                 finding.analysis ||
                 response.state.data.analysisCache?.get(finding.source) ||
