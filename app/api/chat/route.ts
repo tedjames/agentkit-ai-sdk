@@ -1,28 +1,64 @@
-import { openai } from '@ai-sdk/openai';
-import { streamText } from 'ai';
+import { simpleAgentFunction } from "@/inngest/functions/simple-agent";
+import { inngest } from "@/inngest/client";
+import { subscribe } from "@inngest/realtime";
+import { Message } from "@inngest/agent-kit";
 
 // Allow responses up to 5 minutes
 export const maxDuration = 300;
 
-export async function POST(req: Request) {
-  const { messages } = await req.json();
-
-  const result = streamText({
-    model: openai('o3-mini'),
-    system: `When displaying code, always wrap code blocks with triple backticks and include the appropriate language tag.
-
-Example:
-\`\`\`javascript
-// This is well-formatted JavaScript code
-function example() {
-  const x = 10;
-  return x * 2;
+interface ChatRequest {
+  query: string;
+  threadId: string;
+  messages?: Message[];
 }
-\`\`\`
 
-Ensure all code is properly indented, well-spaced, and follows standard formatting conventions for the language. Preserve line breaks and indentation in code blocks. For inline code, use single backticks.`,
-    messages,
+export async function POST(req: Request) {
+  const body = (await req.json()) as ChatRequest;
+  const { query, threadId, messages = [] } = body;
+
+  if (!query || !threadId) {
+    return new Response(
+      JSON.stringify({ error: "Missing required fields: query and threadId" }),
+      {
+        status: 400,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+  }
+
+  // Send the event to trigger the agent
+  try {
+    await inngest.send({
+      name: "simple-agent/run",
+      data: {
+        query,
+        threadId,
+        messages,
+      },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: "Failed to run agent" }), {
+      status: 500,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  }
+
+  // Subscribe to the stream of updates using the same threadId
+  const stream = await subscribe({
+    app: inngest,
+    channel: `chat.${threadId}`,
+    topics: ["messages"],
   });
 
-  return result.toDataStreamResponse();
+  return new Response(stream.getEncodedStream(), {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
 }

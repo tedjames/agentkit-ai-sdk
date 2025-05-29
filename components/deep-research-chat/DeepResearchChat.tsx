@@ -11,7 +11,6 @@ import { ResearchConfiguration } from "./ResearchConfiguration";
 interface Finding {
   source: string;
   content: string;
-  relevanceScore?: number;
   analysis?: string;
 }
 
@@ -484,8 +483,7 @@ export function DeepResearchChat() {
                                   // Only update if the new node has more information
                                   if (node.findings.length > existingNode.findings.length ||
                                       node.children.length > existingNode.children.length ||
-                                      node.reflection !== undefined ||
-                                      node.relevanceScore !== undefined) {
+                                      node.reflection !== undefined) {
                                     nodeMap.set(node.query, node);
                                   }
                                 } else {

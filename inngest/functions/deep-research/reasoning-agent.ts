@@ -12,82 +12,14 @@ import {
 } from "../deep-research";
 import { formatCitationIEEE, assignCitationNumbers } from "./citations";
 
-// Initialize Exa client
-const exa = new Exa(process.env.EXA_API_KEY || "");
-
 /**
- * Helper functions for better console logging
+ * Configuration constants for search and content processing
  */
-function logSection(title: string) {
-  console.log("\n" + "=".repeat(80));
-  console.log(`==== ${title} ${"=".repeat(72 - title.length)}`);
-  console.log("=".repeat(80) + "\n");
-}
-
-function logInfo(message: string) {
-  console.log(`[INFO] ${message}`);
-}
-
-function logTree(tree: ReasoningTree) {
-  console.log("\n----- REASONING TREE STRUCTURE -----");
-
-  // Count nodes per depth
-  const nodesByDepth: Record<number, ReasoningNode[]> = {};
-
-  tree.nodes.forEach((node) => {
-    if (!nodesByDepth[node.depth]) {
-      nodesByDepth[node.depth] = [];
-    }
-    nodesByDepth[node.depth].push(node);
-  });
-
-  // Print tree statistics
-  console.log(`Total nodes: ${tree.nodes.length}`);
-
-  Object.entries(nodesByDepth).forEach(([depth, nodes]) => {
-    console.log(`Depth ${depth}: ${nodes.length} nodes`);
-  });
-
-  // Print node details
-  Object.entries(nodesByDepth)
-    .sort(([a], [b]) => Number(a) - Number(b))
-    .forEach(([depth, nodes]) => {
-      console.log(`\n----- DEPTH ${depth} -----`);
-
-      nodes.forEach((node) => {
-        const hasFindings = node.findings.length > 0;
-        const hasReflection = !!node.reflection;
-        const hasChildren = node.children.length > 0;
-
-        console.log(
-          `Node ${node.id.substring(0, 8)}... (${
-            hasFindings ? "✅" : "❌"
-          } findings, ${hasReflection ? "✅" : "❌"} reflection, ${
-            hasChildren ? "✅" : "❌"
-          } children)`
-        );
-        console.log(`  Query: ${node.query.substring(0, 100)}...`);
-
-        if (node.parentId) {
-          console.log(`  Parent: ${node.parentId.substring(0, 8)}...`);
-        }
-
-        if (hasFindings) {
-          console.log(`  Findings: ${node.findings.length}`);
-        }
-
-        if (hasChildren) {
-          console.log(
-            `  Children: ${node.children
-              .map((id) => id.substring(0, 8))
-              .join(", ")}...`
-          );
-        }
-      });
-    });
-
-  console.log("\n---------------------------------\n");
-}
+const SEARCH_CONFIG = {
+  CONTENT_PREVIEW_LENGTH: 1000,
+  ANALYSIS_CHARACTER_LIMIT: 4000,
+  SEARCH_RESULTS_MULTIPLIER: 2, // Fetch 2x maxBreadth for deduplication
+} as const;
 
 /**
  * Helper function to generate a unique ID for reasoning nodes
@@ -126,8 +58,6 @@ async function analyzeSearchResult({
   step?: any;
   context?: string | null;
 }): Promise<string> {
-  logInfo(`Analyzing search result from: ${result.url}`);
-
   const analysisResult = await step?.ai.wrap(
     "analyze-search-result",
     async () => {
@@ -154,18 +84,24 @@ async function analyzeSearchResult({
         SEARCH RESULT TITLE: ${result.title || "No title"}
         
         SEARCH RESULT CONTENT:
-        ${
-          result.text ? result.text.substring(0, 2000) : "No content available"
-        }${result.text && result.text.length > 2000 ? "..." : ""}
+        ${result.text || "No content available"}
         
         Provide a thoughtful analysis of this single search result that:
         1. Extracts the key information relevant to the query and overall research topic
         2. Evaluates the credibility and relevance of the source
         3. Identifies important insights, facts, or perspectives provided
         4. Notes any limitations or biases in this particular source
+
+        Make sure to include comprehensive technical details including any tables or facts that we
+        can use to expand our understanding of the topic. Don't just summarize the result, but 
+        provide a detailed analysis of the result and how it contributes to our understanding of the topic
+        while also noting down important facts, technical details, and any other information that we can use
+        to expand our understanding of the topic.
         
         Your analysis should be focused specifically on this single result and what it contributes 
-        to understanding the query. Limit your analysis to about 4000 characters.
+        to understanding the query. Limit your analysis to about ${
+          SEARCH_CONFIG.ANALYSIS_CHARACTER_LIMIT
+        } characters.
       `,
       });
     }
@@ -176,7 +112,7 @@ async function analyzeSearchResult({
 
 /**
  * Research a specific node by collecting findings from web search using Exa API
- * Modified to return 3 results per query with deduplication
+ * Modified to return maxBreadth results per query with deduplication
  */
 async function researchNode({
   node,
@@ -191,59 +127,33 @@ async function researchNode({
   step?: any;
   state: NetworkState;
 }): Promise<Finding[]> {
-  logSection(`RESEARCHING NODE: ${node.id.substring(0, 8)}...`);
-  logInfo(`Query: ${node.query}`);
-  logInfo(`Depth: ${node.depth}`);
-
   try {
+    // Initialize Exa client
+    const exa = new Exa(process.env.EXA_API_KEY || "");
+
     // Ensure searchedUrls exists in state
     if (!state.searchedUrls) {
       state.searchedUrls = new Set<string>();
     }
 
-    // Log cache status at start
-    logInfo(
-      `Cache status - SearchedUrls: ${
-        state.searchedUrls.size
-      }, AnalysisCache: ${state.analysisCache?.size || 0}`
-    );
+    // Get maxBreadth from configuration
+    const maxBreadth = state.configuration?.maxBreadth || 3;
 
     // Prepare the search query by combining the stage context and the specific query
     const searchQuery = `${topic} - ${node.query}`;
-    logInfo(`Executing Exa search: "${searchQuery}"`);
 
     // Perform the search and get content with Exa
     const searchResults = await step?.ai.wrap("exa-search", async () => {
       try {
-        // Get search results with content
-        logInfo("Calling Exa API...");
-        const startTime = Date.now();
-
         const results = await exa.searchAndContents(searchQuery, {
           text: true,
-          numResults: 5, // Ask for more to account for deduplication
+          numResults: maxBreadth * SEARCH_CONFIG.SEARCH_RESULTS_MULTIPLIER, // Fetch 2x maxBreadth for deduplication
           highlightMatches: true, // Highlight matching terms
         });
-
-        const duration = Date.now() - startTime;
-        logInfo(`Exa API call completed in ${duration}ms`);
-
-        if (results.results && results.results.length > 0) {
-          logInfo(`Received ${results.results.length} results from Exa`);
-          results.results.forEach((result, i) => {
-            logInfo(
-              `Result ${i + 1}: ${result.title || "No title"} (${result.url})`
-            );
-            logInfo(`  Content length: ${result.text?.length || 0} characters`);
-          });
-        } else {
-          logInfo("No results returned from Exa API");
-        }
 
         return results;
       } catch (error) {
         console.error("Exa search error:", error);
-        logInfo("❌ Exa API call failed");
         return { results: [] };
       }
     });
@@ -262,17 +172,14 @@ async function researchNode({
           state.searchedUrls.has(result.url) &&
           state.analysisCache?.has(result.url)
         ) {
-          logInfo(
-            `🔄 CACHE HIT: Reusing analysis for duplicate URL: ${result.url}`
-          );
-
           // Reuse the existing analysis
           findings.push({
             source: result.url,
             content:
-              result.text.substring(0, 1000) +
-              (result.text.length > 1000 ? "..." : ""),
-            relevanceScore: 0.8, // Default score
+              result.text.substring(0, SEARCH_CONFIG.CONTENT_PREVIEW_LENGTH) +
+              (result.text.length > SEARCH_CONFIG.CONTENT_PREVIEW_LENGTH
+                ? "..."
+                : ""),
             analysis: state.analysisCache.get(result.url),
             title: result.title || null,
             author: result.author || null,
@@ -282,7 +189,7 @@ async function researchNode({
           });
 
           // If we have enough findings already, we can stop
-          if (findings.length >= 3) break;
+          if (findings.length >= maxBreadth) break;
 
           // Skip to next result without adding to dedupedResults
           continue;
@@ -290,28 +197,30 @@ async function researchNode({
 
         // Skip already seen URLs (that don't have cached analysis)
         if (state.searchedUrls.has(result.url)) {
-          logInfo(
-            `⏭️  SKIP: Already seen URL without cached analysis: ${result.url}`
-          );
           continue;
         }
 
         // Track this URL
         state.searchedUrls.add(result.url);
         dedupedResults.push(result);
-        logInfo(`✅ NEW URL: Added to processing queue: ${result.url}`);
 
-        // Stop if we have enough unique results
-        if (dedupedResults.length >= 3) break;
+        // Stop if we have enough unique results (considering both cached and new)
+        if (
+          dedupedResults.length >= maxBreadth ||
+          findings.length + dedupedResults.length >= maxBreadth
+        )
+          break;
       }
     }
 
-    logInfo(`After deduplication: ${dedupedResults.length} unique results`);
-
     // Process deduplicated results to add to findings
     if (dedupedResults.length > 0) {
-      // Create analysis promises for all results in parallel
-      const analysisPromises = dedupedResults.map((result) =>
+      // Only process enough results to reach maxBreadth total findings
+      const remainingSlots = maxBreadth - findings.length;
+      const resultsToProcess = dedupedResults.slice(0, remainingSlots);
+
+      // Create analysis promises for results we'll actually use
+      const analysisPromises = resultsToProcess.map((result) =>
         analyzeSearchResult({
           query: node.query,
           reasoning: node.reasoning || "No reasoning provided",
@@ -324,13 +233,10 @@ async function researchNode({
       );
 
       // Execute all analyses in parallel
-      logInfo(
-        `Analyzing ${analysisPromises.length} search results in parallel`
-      );
       const analyses = await Promise.all(analysisPromises);
 
       // Process the results
-      dedupedResults.forEach((result, index) => {
+      resultsToProcess.forEach((result, index) => {
         const analysis = analyses[index];
 
         // Cache the analysis for potential reuse
@@ -338,15 +244,15 @@ async function researchNode({
           state.analysisCache = new Map<string, string>();
         }
         state.analysisCache.set(result.url, analysis);
-        logInfo(`💾 CACHED: Analysis saved for ${result.url}`);
 
         // Create a finding with the analysis
         findings.push({
           source: result.url,
           content:
-            result.text.substring(0, 1000) +
-            (result.text.length > 1000 ? "..." : ""),
-          relevanceScore: 0.8, // Default score
+            result.text.substring(0, SEARCH_CONFIG.CONTENT_PREVIEW_LENGTH) +
+            (result.text.length > SEARCH_CONFIG.CONTENT_PREVIEW_LENGTH
+              ? "..."
+              : ""),
           analysis, // Include the analysis with the finding
           title: result.title || null,
           author: result.author || null,
@@ -354,20 +260,12 @@ async function researchNode({
           favicon: result.favicon || null,
           image: result.image || null,
         });
-
-        logInfo(`Created finding with analysis for ${result.url}`);
       });
-    }
-
-    // If we couldn't get any findings from Exa, return an empty array. No fallback generation.
-    if (findings.length === 0) {
-      logInfo("⚠️ No Exa results found for this query");
     }
 
     return findings;
   } catch (error) {
     console.error(`Error researching node ${node.id}:`, error);
-    logInfo(`❌ Error during research: ${error}`);
 
     // Return empty findings array on error
     return [];
@@ -383,19 +281,15 @@ async function generateFollowUpQueries({
   stage,
   topic,
   step,
-  maxBreadth = 3, // Default to 3 if not provided
+  maxBreadth,
 }: {
   initialFindings: Finding[];
   originalQueries: string[];
   stage: ReasoningStage;
   topic: string;
   step?: any;
-  maxBreadth?: number;
+  maxBreadth: number;
 }): Promise<any> {
-  logInfo(
-    `Generating follow-up queries based on ${initialFindings.length} findings (maxBreadth: ${maxBreadth})`
-  );
-
   // Extract all analyses from the findings
   const allAnalyses = initialFindings
     .filter((finding) => finding.analysis)
@@ -408,21 +302,11 @@ async function generateFollowUpQueries({
     )
   );
 
-  logInfo(
-    `Stage ${stage.name}: built citation map with ${citationMap.size} sources`
-  );
-
   // Build reference list markdown lines
   const referenceLines = Array.from(citationMap.entries()).map(([url, num]) => {
     const finding = allAnalyses.find((f) => f.source === url)!;
     return formatCitationIEEE(finding, num);
   });
-
-  logInfo(`Reference lines preview:\n${referenceLines.slice(0, 5).join("\n")}`);
-
-  logInfo(
-    `Stage ${stage.name}: reference list lines count ${referenceLines.length}`
-  );
 
   // Build analyses with citation prefixes
   const analysesWithCites = allAnalyses.map((finding) => {
@@ -492,6 +376,15 @@ async function generateFollowUpQueries({
 }
 
 /**
+ * Calculate the maximum character limit for stage-level analysis based on input volume
+ */
+function calculateStageLevelLimit(allAnalyses: Finding[]): number {
+  return allAnalyses
+    .map((finding) => finding.analysis?.length || 0)
+    .reduce((sum, len) => sum + len, 0);
+}
+
+/**
  * Generate stage analysis based on all findings from depth 0 and depth 1
  */
 async function generateStageAnalysis({
@@ -505,22 +398,19 @@ async function generateStageAnalysis({
   topic: string;
   step?: any;
 }): Promise<string> {
-  logInfo(`Generating stage analysis based on ${allFindings.length} findings`);
-
   // Extract all analyses from the findings
   const allAnalyses = allFindings
     .filter((finding) => finding.analysis)
     .map((finding) => finding as Finding);
+
+  // Calculate the stage-level character limit
+  const stageLevelLimit = calculateStageLevelLimit(allAnalyses);
 
   // Build citation numbering for this stage based on first appearance order
   const citationMap = assignCitationNumbers(
     allAnalyses.filter(
       (f, idx, arr) => arr.findIndex((x) => x.source === f.source) === idx
     )
-  );
-
-  logInfo(
-    `generateStageAnalysis: citation map has ${citationMap.size} entries`
   );
 
   // Build reference list markdown lines
@@ -538,13 +428,8 @@ async function generateStageAnalysis({
   const analysisResult = await step?.ai.wrap(
     "generate-stage-analysis",
     async () => {
-      return await generateObject({
+      return await generateText({
         model: vercelOpenAI("gpt-4o"),
-        schema: z.object({
-          stageAnalysis: z
-            .string()
-            .describe("Comprehensive analysis of all findings for this stage"),
-        }),
         prompt: `
         You are a research expert creating a comprehensive analysis for a research stage.
         
@@ -568,19 +453,19 @@ async function generateStageAnalysis({
         7. Notes remaining gaps or questions for future research
         
         Your analysis should provide a clear, coherent narrative of what we've learned about this aspect 
-        of the topic through our research. It should be thorough yet focused on the most significant insights.
+        of the topic through our research. Structure this as a comprehensive multi-page report that 
+        synthesizes all findings into a cohesive narrative. Your response should come close to but not exceed ${stageLevelLimit} 
+        characters, as this represents the total volume of analysis being synthesized.
 
-        This should be a comprehensive 6-10 paragraphs long report
-
-        When writing your stage analysis, cite information inline using the IEEE style [n] where n corresponds to the source number above. End your analysis with a **References** section that repeats the list exactly as provided above.
+        When writing your stage analysis, cite information inline using the IEEE style [n] where n corresponds 
+        to the source number above. End your analysis with a **References** section that repeats the list 
+        exactly as provided above.
       `,
       });
     }
   );
 
-  return (
-    analysisResult?.object?.stageAnalysis || "No analysis could be generated."
-  );
+  return analysisResult?.text || "No analysis could be generated.";
 }
 
 /**
@@ -610,11 +495,6 @@ export const buildReasoningTreeTool = createTool({
 
     const { maxDepth, maxBreadth } = configuration;
 
-    logSection("BUILD REASONING TREE TOOL");
-    logInfo(`Topic: ${topic}`);
-    logInfo(`Stage: ${currentStageIndex + 1}/${reasoningStages.length}`);
-    logInfo(`MaxDepth: ${maxDepth}, MaxBreadth: ${maxBreadth}`);
-
     // Clear caches at the start of each stage
     // We check if this is the first call for this stage by looking at whether any nodes have findings
     const currentStage = reasoningStages[currentStageIndex];
@@ -626,8 +506,6 @@ export const buildReasoningTreeTool = createTool({
       );
 
     if (isNewStage) {
-      logInfo("Starting new stage - clearing URL and analysis caches");
-
       if (!state.searchedUrls) {
         state.searchedUrls = new Set<string>();
       } else {
@@ -639,10 +517,6 @@ export const buildReasoningTreeTool = createTool({
       } else {
         state.analysisCache.clear();
       }
-
-      logInfo(
-        `Caches cleared. SearchedUrls: ${state.searchedUrls.size}, AnalysisCache: ${state.analysisCache.size}`
-      );
     }
 
     // Check if we have stages to work with
@@ -668,9 +542,6 @@ export const buildReasoningTreeTool = createTool({
 
       const tree = currentStage.reasoningTree;
 
-      logInfo(`Working with existing tree (${tree.nodes.length} nodes)`);
-      logTree(tree);
-
       // Step 1: Research depth 0 nodes that don't have findings yet
       const depthZeroNodesWithoutFindings = tree.nodes.filter(
         (node) =>
@@ -683,20 +554,10 @@ export const buildReasoningTreeTool = createTool({
           0,
           maxBreadth
         );
-        logInfo(
-          `Researching ${nodesToProcess.length} depth 0 nodes in parallel`
-        );
 
         // Research nodes in parallel
         const researchResults = await Promise.all(
           nodesToProcess.map(async (nodeToResearch) => {
-            logInfo(
-              `Researching depth 0 node: ${nodeToResearch.id.substring(
-                0,
-                8
-              )}... with query: ${nodeToResearch.query.substring(0, 50)}...`
-            );
-
             // Research the node with Exa API
             const findings = await researchNode({
               node: nodeToResearch,
@@ -705,12 +566,6 @@ export const buildReasoningTreeTool = createTool({
               step,
               state,
             });
-
-            logInfo(
-              `Found ${
-                findings.length
-              } findings for node ${nodeToResearch.id.substring(0, 8)}...`
-            );
 
             return { nodeId: nodeToResearch.id, findings };
           })
@@ -721,11 +576,6 @@ export const buildReasoningTreeTool = createTool({
           const node = findNodeById(tree, nodeId);
           if (node) {
             node.findings = findings;
-            logInfo(
-              `Updated node ${nodeId.substring(0, 8)}... with ${
-                findings.length
-              } findings`
-            );
           }
         });
 
@@ -738,9 +588,6 @@ export const buildReasoningTreeTool = createTool({
             ...reasoningStages.slice(currentStageIndex + 1),
           ],
         };
-
-        // Visualize the updated tree
-        logTree(tree);
 
         return {
           success: true,
@@ -766,9 +613,6 @@ export const buildReasoningTreeTool = createTool({
         // Collect all findings from depth 0 nodes
         const allDepthZeroFindings = allDepthZeroNodes.flatMap(
           (node) => node.findings
-        );
-        logInfo(
-          `Generating follow-up queries from ${allDepthZeroFindings.length} findings`
         );
 
         // Generate follow-up queries based on all depth 0 findings
@@ -799,14 +643,6 @@ export const buildReasoningTreeTool = createTool({
 
         // Add depth 1 nodes to the tree
         tree.nodes = [...tree.nodes, ...depthOneNodes];
-        logInfo(
-          `Added ${depthOneNodes.length} depth ${
-            currentMaxDepth + 1
-          } follow-up nodes to the tree`
-        );
-
-        // Visualize the updated tree
-        logTree(tree);
 
         // Update the state
         network.state.data = {
@@ -835,22 +671,10 @@ export const buildReasoningTreeTool = createTool({
       if (deeperNodesForResearch.length > 0) {
         // Process up to maxBreadth nodes in parallel
         const nodesToProcess = deeperNodesForResearch.slice(0, maxBreadth);
-        logInfo(
-          `Researching ${nodesToProcess.length} deeper nodes in parallel`
-        );
 
         // Research nodes in parallel
         const researchResults = await Promise.all(
           nodesToProcess.map(async (nodeToResearch) => {
-            logInfo(
-              `Researching depth ${
-                nodeToResearch.depth
-              } node: ${nodeToResearch.id.substring(
-                0,
-                8
-              )}... with query: ${nodeToResearch.query.substring(0, 50)}...`
-            );
-
             // Research the node with Exa API
             const findings = await researchNode({
               node: nodeToResearch,
@@ -859,12 +683,6 @@ export const buildReasoningTreeTool = createTool({
               step,
               state,
             });
-
-            logInfo(
-              `Found ${
-                findings.length
-              } findings for node ${nodeToResearch.id.substring(0, 8)}...`
-            );
 
             return { nodeId: nodeToResearch.id, findings };
           })
@@ -875,16 +693,8 @@ export const buildReasoningTreeTool = createTool({
           const node = findNodeById(tree, nodeId);
           if (node) {
             node.findings = findings;
-            logInfo(
-              `Updated node ${nodeId.substring(0, 8)}... with ${
-                findings.length
-              } findings`
-            );
           }
         });
-
-        // Visualize the updated tree
-        logTree(tree);
 
         // Update the state
         network.state.data = {
@@ -917,9 +727,6 @@ export const buildReasoningTreeTool = createTool({
       if (allNodesComplete && !currentStage.analysis) {
         // Collect all findings from all nodes
         const allFindings = allNodes.flatMap((node) => node.findings);
-        logInfo(
-          `Generating stage analysis from ${allFindings.length} findings`
-        );
 
         // Generate comprehensive stage analysis
         const stageAnalysis = await generateStageAnalysis({
@@ -933,8 +740,6 @@ export const buildReasoningTreeTool = createTool({
         currentStage.analysis = stageAnalysis;
         currentStage.reasoningComplete = true;
         currentStage.analysisComplete = true;
-
-        logInfo("✅ Stage analysis complete!");
 
         // Update the state
         network.state.data = {
@@ -1013,42 +818,6 @@ Continue using the 'build_reasoning_tree' tool until the entire research and ana
   tools: [buildReasoningTreeTool],
   lifecycle: {
     onStart: async ({ input, network, prompt, history }) => {
-      console.log("=== REASONING AGENT START ===");
-
-      if (network) {
-        const state = network.state.data as NetworkState;
-        const currentStage =
-          state.reasoningStages?.[state.currentStageIndex || 0];
-
-        console.log(`Current stage: ${currentStage?.name || "Unknown"}`);
-        console.log(
-          `Stage description: ${
-            currentStage?.description?.substring(0, 100) || "None"
-          }...`
-        );
-
-        // Log tree stats if exists
-        if (currentStage?.reasoningTree?.nodes) {
-          const nodes = currentStage.reasoningTree.nodes;
-          const depths = nodes.map((n) => n.depth);
-          const maxNodeDepth = depths.length > 0 ? Math.max(...depths) : -1;
-
-          console.log(
-            `Current tree stats: ${nodes.length} nodes, max depth: ${maxNodeDepth}`
-          );
-
-          // Count nodes per depth
-          const nodesByDepth = depths.reduce((acc, depth) => {
-            acc[depth] = (acc[depth] || 0) + 1;
-            return acc;
-          }, {} as Record<number, number>);
-
-          Object.entries(nodesByDepth).forEach(([depth, count]) => {
-            console.log(`  Depth ${depth}: ${count} nodes`);
-          });
-        }
-      }
-
       return {
         prompt,
         history: history || [],
@@ -1056,41 +825,6 @@ Continue using the 'build_reasoning_tree' tool until the entire research and ana
       };
     },
     onFinish: async ({ result, network }) => {
-      console.log("=== REASONING AGENT FINISH ===");
-
-      if (network) {
-        const state = network.state.data as NetworkState;
-        const currentStage =
-          state.reasoningStages?.[state.currentStageIndex || 0];
-
-        if (
-          currentStage &&
-          currentStage.reasoningTree &&
-          currentStage.reasoningTree.nodes.length > 0
-        ) {
-          const tree = currentStage.reasoningTree;
-          const nodeCount = tree.nodes.length;
-          const depths = tree.nodes.map((n) => n.depth);
-          const maxDepth = depths.length > 0 ? Math.max(...depths) : 0;
-          const researchedNodes = tree.nodes.filter(
-            (n) => n.findings.length > 0
-          ).length;
-
-          console.log(`Reasoning tree stats for stage "${currentStage.name}":`);
-          console.log(`  Total nodes: ${nodeCount}`);
-          console.log(`  Max depth: ${maxDepth}`);
-          console.log(`  Researched nodes: ${researchedNodes}/${nodeCount}`);
-
-          // Log completion status
-          console.log(
-            `  Stage reasoning complete: ${currentStage.reasoningComplete}`
-          );
-          console.log(
-            `  Stage analysis complete: ${currentStage.analysisComplete}`
-          );
-        }
-      }
-
       return result;
     },
   },

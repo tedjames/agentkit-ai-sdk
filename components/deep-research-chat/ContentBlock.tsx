@@ -93,11 +93,6 @@ function CollapsibleFinding({ finding, parentExpanded }: CollapsibleFindingProps
               {finding.source}
             </a>
           </div>
-          {finding.relevanceScore !== undefined && (
-            <span className="text-xs text-white/50 flex-shrink-0 ml-2">
-              Relevance: {(finding.relevanceScore * 100).toFixed(1)}%
-            </span>
-          )}
         </div>
       </button>
 
