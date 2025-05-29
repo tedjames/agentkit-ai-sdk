@@ -90,6 +90,7 @@ export function Chat() {
         body: JSON.stringify({ 
           query: userInput,
           threadId,
+          messages: messages,
         }),
         signal: currentStreamController.current.signal,
       });

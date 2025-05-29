@@ -1,13 +1,20 @@
 import { simpleAgentFunction } from "@/inngest/functions/simple-agent";
 import { inngest } from "@/inngest/client";
 import { subscribe } from "@inngest/realtime";
+import { Message } from "@inngest/agent-kit";
 
 // Allow responses up to 5 minutes
 export const maxDuration = 300;
 
+interface ChatRequest {
+  query: string;
+  threadId: string;
+  messages?: Message[];
+}
+
 export async function POST(req: Request) {
-  const body = await req.json();
-  const { query, threadId } = body;
+  const body = (await req.json()) as ChatRequest;
+  const { query, threadId, messages = [] } = body;
 
   if (!query || !threadId) {
     return new Response(
@@ -28,6 +35,7 @@ export async function POST(req: Request) {
       data: {
         query,
         threadId,
+        messages,
       },
     });
   } catch (error) {

@@ -4,6 +4,7 @@ import {
   openai,
   createState,
   TextMessage,
+  Message,
 } from "@inngest/agent-kit";
 import { inngest } from "../client";
 
@@ -13,6 +14,7 @@ interface NetworkState {
   networkComplete: boolean;
   response?: string;
   threadId?: string;
+  messages: Message[];
 }
 
 // Create the Inngest function
@@ -20,7 +22,15 @@ export const simpleAgentFunction = inngest.createFunction(
   { id: "simple-agent-workflow" },
   { event: "simple-agent/run" },
   async ({ step, event, publish }) => {
-    const { query, threadId } = event.data;
+    const { query, threadId, messages = [] } = event.data;
+
+    console.log("=== Starting Simple Agent Function ===");
+    console.log("Received event data:", {
+      query,
+      threadId,
+      messageCount: messages.length,
+      messages: messages,
+    });
 
     // Create a simple agent that can respond to queries
     const simpleAgent = createAgent<NetworkState>({
@@ -31,10 +41,24 @@ export const simpleAgentFunction = inngest.createFunction(
 When responding:
 1. Be clear and concise
 2. Use markdown formatting when appropriate
-3. If you don't know something, say so`,
+3. If you don't know something, say so
+
+Previous conversation history will be provided in the network state's messages array. Use this context to provide relevant and contextual responses.`,
       model: openai({
         model: "gpt-4o",
       }),
+    });
+
+    // Add the current query as a user message
+    const userMessage: TextMessage = {
+      type: "text",
+      role: "user",
+      content: query,
+    };
+
+    console.log("Creating network state with messages:", {
+      existingMessages: messages,
+      newUserMessage: userMessage,
     });
 
     // Create properly typed state for this run
@@ -42,7 +66,12 @@ When responding:
       query,
       networkComplete: false,
       threadId,
-      // add messages here
+      messages: [...messages, userMessage], // Include previous messages and current query
+    });
+
+    console.log("Created network state:", {
+      messageCount: state.data.messages.length,
+      messages: state.data.messages,
     });
 
     // Create the network
@@ -55,6 +84,12 @@ When responding:
       defaultState: state,
       router: async ({ network }) => {
         const state = network.state.data;
+        console.log("Router called with state:", {
+          messageCount: state.messages.length,
+          messages: state.messages,
+          networkComplete: state.networkComplete,
+          resultsCount: network.state.results.length,
+        });
 
         // If network is complete, stop
         if (state.networkComplete) {
@@ -65,6 +100,12 @@ When responding:
         if (network.state.results.length > 0) {
           const lastResult =
             network.state.results[network.state.results.length - 1];
+          console.log("Processing last result:", {
+            agentName: lastResult.agentName,
+            outputCount: lastResult.output.length,
+            output: lastResult.output,
+          });
+
           const lastMessage = lastResult.output[0] as TextMessage;
 
           if (lastMessage?.type === "text") {
@@ -75,15 +116,26 @@ When responding:
                 : lastMessage.content[0].text;
             state.networkComplete = true;
 
+            // Create the assistant message
+            const assistantMessage: TextMessage = {
+              type: "text",
+              role: "assistant",
+              content: state.response,
+            };
+
+            // Add to state messages
+            state.messages.push(assistantMessage);
+
+            console.log("Updated state messages after assistant response:", {
+              messageCount: state.messages.length,
+              messages: state.messages,
+            });
+
             await publish({
               channel: `chat.${state.threadId}`,
               topic: "messages",
               data: {
-                message: {
-                  type: "text",
-                  role: "assistant",
-                  content: state.response,
-                },
+                message: assistantMessage,
               },
             });
           }
@@ -96,7 +148,18 @@ When responding:
     });
 
     // Run the network with the query
+    console.log("Running network with state:", {
+      messageCount: state.data.messages.length,
+      messages: state.data.messages,
+    });
+
     const response = await simpleNetwork.run(query, { state });
+
+    console.log("Network run complete:", {
+      messageCount: response.state.data.messages.length,
+      messages: response.state.data.messages,
+      response: response.state.data.response,
+    });
 
     // Send completion event
     await publish({
@@ -107,9 +170,10 @@ When responding:
       },
     });
 
-    // Return the final response
+    // Return the final response and messages
     return {
       response: response.state.data.response,
+      messages: response.state.data.messages,
     };
   }
 );
