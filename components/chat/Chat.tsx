@@ -14,6 +14,7 @@ const generateThreadId = () => {
 
 export function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [agentResults, setAgentResults] = useState<any[]>([]); // Store AgentResult objects
   const [isLoading, setIsLoading] = useState(false);
   const [userInput, setUserInput] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
@@ -72,7 +73,7 @@ export function Chat() {
     // Create a new abort controller for this stream
     currentStreamController.current = new AbortController();
 
-    // Add user message immediately
+    // Add user message immediately to UI
     const userMessage: TextMessage = {
       type: "text",
       role: "user",
@@ -80,6 +81,20 @@ export function Chat() {
       stop_reason: "stop"
     };
     setMessages(prev => [...prev, userMessage]);
+    
+    // Create a user AgentResult for conversation history
+    const userAgentResult = {
+      agentName: "user", // Distinguish user messages
+      output: [userMessage],
+      toolCalls: [],
+      createdAt: new Date().toISOString(),
+      checksum: `user_${Date.now()}_${Math.random()}`, // Simple unique ID for user messages
+    };
+
+    // Add user message to agentResults immediately
+    const updatedAgentResults = [...agentResults, userAgentResult];
+    setAgentResults(updatedAgentResults);
+
     setIsLoading(true);
     setUserInput("");
     resizeTextarea();
@@ -90,7 +105,7 @@ export function Chat() {
         body: JSON.stringify({ 
           query: userInput,
           threadId,
-          messages: messages,
+          agentResults: updatedAgentResults, // Send updated AgentResult objects including new user message
         }),
         signal: currentStreamController.current.signal,
       });
@@ -112,7 +127,6 @@ export function Chat() {
 
         // Decode the chunk and add to buffer
         const newText = decoder.decode(value, { stream: true });
-        console.log("Received chunk:", newText);
         buffer += newText;
 
         // Process complete messages from buffer
@@ -124,23 +138,19 @@ export function Chat() {
           if (!line.trim()) continue;
 
           try {
-            console.log("Processing line:", line);
             const event = JSON.parse(line);
-            console.log("Parsed event:", event);
 
             if (event.data?.message) {
-              console.log("Adding message to state:", event.data.message);
-              setMessages(prev => {
-                console.log("Previous messages:", prev);
-                const newMessages = [...prev, event.data.message as TextMessage];
-                console.log("New messages:", newMessages);
-                return newMessages;
-              });
+              setMessages(prev => [...prev, event.data.message as TextMessage]);
             } else if (event.data?.status === "complete") {
-              console.log("Received completion event");
               setIsLoading(false);
               // Clean up this stream since it's complete
               cleanupCurrentStream();
+              
+              // Append new agentResults to existing conversation history
+              if (event.data.agentResults) {
+                setAgentResults(prev => [...prev, ...event.data.agentResults]);
+              }
             }
           } catch (e) {
             console.error('Error parsing event:', e);
@@ -171,6 +181,7 @@ export function Chat() {
         onNewChat={() => {
           cleanupCurrentStream();
           setMessages([]);
+          setAgentResults([]);
         }}
         onShareChat={() => {}}
         onViewConversations={() => {}}

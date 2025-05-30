@@ -5,6 +5,7 @@ import {
   createState,
   TextMessage,
   Message,
+  AgentResult,
 } from "@inngest/agent-kit";
 import { inngest } from "../client";
 
@@ -14,7 +15,20 @@ interface NetworkState {
   networkComplete: boolean;
   response?: string;
   threadId?: string;
-  messages: Message[];
+}
+
+// Helper function to extract messages from AgentResult objects for conversation history
+function extractMessagesFromAgentResults(agentResults: any[]): Message[] {
+  const messages: Message[] = [];
+
+  for (const result of agentResults) {
+    if (result.output && Array.isArray(result.output)) {
+      // Add all output messages from each result
+      messages.push(...result.output);
+    }
+  }
+
+  return messages;
 }
 
 // Create the Inngest function
@@ -22,15 +36,10 @@ export const simpleAgentFunction = inngest.createFunction(
   { id: "simple-agent-workflow" },
   { event: "simple-agent/run" },
   async ({ step, event, publish }) => {
-    const { query, threadId, messages = [] } = event.data;
+    const { query, threadId, agentResults = [] } = event.data;
 
-    console.log("=== Starting Simple Agent Function ===");
-    console.log("Received event data:", {
-      query,
-      threadId,
-      messageCount: messages.length,
-      messages: messages,
-    });
+    // Extract conversation history as messages
+    const conversationHistory = extractMessagesFromAgentResults(agentResults);
 
     // Create a simple agent that can respond to queries
     const simpleAgent = createAgent<NetworkState>({
@@ -43,36 +52,26 @@ When responding:
 2. Use markdown formatting when appropriate
 3. If you don't know something, say so
 
-Previous conversation history will be provided in the network state's messages array. Use this context to provide relevant and contextual responses.`,
+You have access to the full conversation history. Use this context to provide relevant and contextual responses.`,
       model: openai({
         model: "gpt-4o",
       }),
     });
 
-    // Add the current query as a user message
-    const userMessage: TextMessage = {
-      type: "text",
-      role: "user",
-      content: query,
-    };
+    // Create properly typed state for this run using messages for conversation history
+    const state = createState<NetworkState>(
+      {
+        query,
+        networkComplete: false,
+        threadId,
+      },
+      {
+        messages: conversationHistory, // Use messages instead of results for conversation history
+      }
+    );
 
-    console.log("Creating network state with messages:", {
-      existingMessages: messages,
-      newUserMessage: userMessage,
-    });
-
-    // Create properly typed state for this run
-    const state = createState<NetworkState>({
-      query,
-      networkComplete: false,
-      threadId,
-      messages: [...messages, userMessage], // Include previous messages and current query
-    });
-
-    console.log("Created network state:", {
-      messageCount: state.data.messages.length,
-      messages: state.data.messages,
-    });
+    // Track if we've published the response yet
+    let hasPublishedResponse = false;
 
     // Create the network
     const simpleNetwork = createNetwork<NetworkState>({
@@ -84,29 +83,20 @@ Previous conversation history will be provided in the network state's messages a
       defaultState: state,
       router: async ({ network }) => {
         const state = network.state.data;
-        console.log("Router called with state:", {
-          messageCount: state.messages.length,
-          messages: state.messages,
-          networkComplete: state.networkComplete,
-          resultsCount: network.state.results.length,
-        });
 
         // If network is complete, stop
         if (state.networkComplete) {
           return undefined;
         }
 
-        // Publish the agent's response if available
-        if (network.state.results.length > 0) {
+        // Check if we have a new result to publish
+        if (network.state.results.length > 0 && !hasPublishedResponse) {
           const lastResult =
             network.state.results[network.state.results.length - 1];
-          console.log("Processing last result:", {
-            agentName: lastResult.agentName,
-            outputCount: lastResult.output.length,
-            output: lastResult.output,
-          });
 
-          const lastMessage = lastResult.output[0] as TextMessage;
+          const lastMessage = lastResult.output.find(
+            (msg) => msg.type === "text"
+          ) as TextMessage;
 
           if (lastMessage?.type === "text") {
             // Store the response in state
@@ -115,65 +105,45 @@ Previous conversation history will be provided in the network state's messages a
                 ? lastMessage.content
                 : lastMessage.content[0].text;
             state.networkComplete = true;
+            hasPublishedResponse = true;
 
-            // Create the assistant message
-            const assistantMessage: TextMessage = {
-              type: "text",
-              role: "assistant",
-              content: state.response,
-            };
-
-            // Add to state messages
-            state.messages.push(assistantMessage);
-
-            console.log("Updated state messages after assistant response:", {
-              messageCount: state.messages.length,
-              messages: state.messages,
-            });
-
+            // Publish the assistant message as a separate event for UI display
             await publish({
               channel: `chat.${state.threadId}`,
               topic: "messages",
               data: {
-                message: assistantMessage,
+                message: lastMessage,
               },
             });
           }
         }
 
-        // Default to the simple agent
-        return simpleAgent;
+        // Default to the simple agent if we haven't completed yet
+        return state.networkComplete ? undefined : simpleAgent;
       },
-      maxIter: 2, // Limit to 3 iterations to prevent infinite loops
+      maxIter: 2, // Reduce maxIter to prevent infinite loops
     });
 
     // Run the network with the query
-    console.log("Running network with state:", {
-      messageCount: state.data.messages.length,
-      messages: state.data.messages,
-    });
-
     const response = await simpleNetwork.run(query, { state });
 
-    console.log("Network run complete:", {
-      messageCount: response.state.data.messages.length,
-      messages: response.state.data.messages,
-      response: response.state.data.response,
-    });
+    // Get only the new results from this network run
+    const newResults = response.state.results.map((result) => result.export());
 
-    // Send completion event
+    // Send completion event with only new agentResults
     await publish({
       channel: `chat.${threadId}`,
       topic: "messages",
       data: {
         status: "complete",
+        agentResults: newResults, // Include only new results
       },
     });
 
-    // Return the final response and messages
+    // Return only the new results
     return {
       response: response.state.data.response,
-      messages: response.state.data.messages,
+      agentResults: newResults, // Return only new results
     };
   }
 );
